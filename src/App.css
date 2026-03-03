@@ -1,0 +1,125 @@
+:root {
+  font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: #eef1f7;
+}
+
+.app-shell {
+  height: 100vh;
+  width: 100vw;
+  display: grid;
+  grid-template-columns: 1fr 340px;
+  gap: 12px;
+  padding: 12px;
+}
+
+.board-area {
+  min-width: 0;
+  border-radius: 14px;
+  overflow: hidden;
+  border: 1px solid #d8deeb;
+  background: #fff;
+}
+
+.side-panel {
+  border-radius: 14px;
+  border: 1px solid #d8deeb;
+  background: #f7f9ff;
+  padding: 12px;
+  display: grid;
+  grid-template-rows: auto 1fr auto auto;
+  gap: 10px;
+}
+
+.panel-title {
+  margin: 0;
+  font-size: 16px;
+}
+
+.api-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+}
+
+.api-input,
+.chat-input {
+  border: 1px solid #cbd4ea;
+  border-radius: 10px;
+  padding: 10px;
+  font: inherit;
+}
+
+.connect-btn,
+.send-btn,
+.record-btn {
+  border: 1px solid #c4cfeb;
+  border-radius: 10px;
+  padding: 10px 12px;
+  font: inherit;
+  font-weight: 600;
+  background: #fff;
+  cursor: pointer;
+}
+
+.send-btn {
+  background: #2f5bff;
+  color: #fff;
+  border-color: #2f5bff;
+}
+
+.record-btn.active {
+  background: #ffe8ec;
+  border-color: #ff9aac;
+  color: #9c233f;
+}
+
+.chat-list {
+  border: 1px solid #d7def0;
+  border-radius: 10px;
+  background: #fff;
+  padding: 10px;
+  overflow: auto;
+}
+
+.chat-message {
+  margin-bottom: 10px;
+}
+
+.chat-role {
+  font-size: 12px;
+  color: #6a7388;
+  margin-bottom: 2px;
+}
+
+.chat-text {
+  margin: 0;
+  white-space: pre-wrap;
+  line-height: 1.4;
+}
+
+.chat-form {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+}
+
+.hint {
+  margin: 0;
+  font-size: 12px;
+  color: #6a7388;
+}
+
+@media (max-width: 980px) {
+  .app-shell {
+    grid-template-columns: 1fr;
+    grid-template-rows: 55vh 1fr;
+  }
+}

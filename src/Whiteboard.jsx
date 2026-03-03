@@ -1,48 +1,20 @@
 import { Excalidraw } from "@excalidraw/excalidraw";
-import { useRef } from "react";
 
-export default function Whiteboard() {
-  const excalidrawRef = useRef(null);
-
+export default function Whiteboard({ onApiReady }) {
   return (
-    <div
-      style={{
-        height: "100vh",
-        width: "100vw",
-        backgroundColor: "#f5f5f5",
-      }}
-    >
+    <div style={{ height: "100%", width: "100%", backgroundColor: "#f5f5f5" }}>
       <Excalidraw
         excalidrawAPI={(api) => {
-          excalidrawRef.current = api;
+          onApiReady?.(api);
         }}
         initialData={{
           appState: {
             viewBackgroundColor: "#ffffff",
             activeTool: { type: "freedraw" },
+            currentItemStrokeColor: "#000000",
           },
         }}
       />
-      <button
-        onClick={() => {
-          const elements = excalidrawRef.current?.getSceneElements?.() || [];
-          console.log(elements);
-        }}
-        style={{
-          position: "fixed",
-          right: 16,
-          bottom: 16,
-          zIndex: 10,
-          padding: "10px 14px",
-          borderRadius: 10,
-          border: "1px solid #d0d0d0",
-          background: "#ffffff",
-          cursor: "pointer",
-          fontWeight: 600,
-        }}
-      >
-        Get Drawing Data
-      </button>
     </div>
   );
 }
