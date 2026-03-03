@@ -21,6 +21,7 @@ if (rootEl) {
       initialData: {
         appState: {
           activeTool: { type: "freedraw", locked: true },
+          currentItemStrokeColor: "#000000",
         },
       },
       UIOptions: {

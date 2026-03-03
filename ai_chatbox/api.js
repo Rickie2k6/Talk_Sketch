@@ -8,24 +8,11 @@ export function hasUserApiKey() {
   return Boolean(userApiKey);
 }
 
-function parseSSEChunk(chunk, onDelta, onDone, onError) {
-  const lines = chunk.split("\n");
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed || !trimmed.startsWith("data:")) continue;
-    const data = trimmed.replace(/^data:\s*/, "");
-    if (data === "[DONE]") {
-      onDone?.();
-      continue;
-    }
-    try {
-      const json = JSON.parse(data);
-      const delta = json.choices?.[0]?.delta?.content;
-      if (delta) onDelta?.(delta);
-    } catch (err) {
-      onError?.(err);
-    }
+function getCurrentSketchElements() {
+  if (!window.excalidrawAPI || typeof window.excalidrawAPI.getSceneElements !== "function") {
+    return [];
   }
+  return window.excalidrawAPI.getSceneElements();
 }
 
 export async function sendMessageToOpenAIStream(message, { onDelta, onDone, onError, signal } = {}) {
@@ -34,46 +21,31 @@ export async function sendMessageToOpenAIStream(message, { onDelta, onDone, onEr
     return;
   }
 
-  const response = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${userApiKey}`,
-    },
-    body: JSON.stringify({
-      model: "gpt-4o-mini",
-      stream: true,
-      messages: [
-        { role: "system", content: "You are TalkSketch AI Coach helping brainstorm ideas." },
-        { role: "user", content: message },
-      ],
-    }),
-    signal,
-  });
+  try {
+    const response = await fetch("/analyze-sketch", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        apiKey: userApiKey,
+        message,
+        elements: getCurrentSketchElements(),
+      }),
+      signal,
+    });
 
-  if (!response.ok || !response.body) {
-    const errText = await response.text().catch(() => "");
-    onError?.(new Error(errText || "request_failed"));
-    return;
-  }
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder("utf-8");
-  let buffer = "";
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-
-    const parts = buffer.split("\n\n");
-    buffer = parts.pop() || "";
-    for (const part of parts) {
-      parseSSEChunk(part, onDelta, onDone, onError);
+    if (!response.ok) {
+      const errText = await response.text().catch(() => "");
+      onError?.(new Error(errText || "request_failed"));
+      return;
     }
-  }
 
-  if (buffer) {
-    parseSSEChunk(buffer, onDelta, onDone, onError);
+    const payload = await response.json();
+    const output = typeof payload?.result === "string" ? payload.result : "";
+    if (output) onDelta?.(output);
+    onDone?.();
+  } catch (err) {
+    onError?.(err);
   }
 }

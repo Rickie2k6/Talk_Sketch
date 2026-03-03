@@ -20,5 +20,13 @@ if (drawBtn) {
     } else if (window.excalidrawAPI) {
       window.excalidrawAPI.setActiveTool({ type: "freedraw", locked: true });
     }
+    if (window.excalidrawAPI) {
+      window.excalidrawAPI.updateScene({
+        appState: {
+          ...window.excalidrawAPI.getAppState(),
+          currentItemStrokeColor: "#000000",
+        },
+      });
+    }
   });
 }

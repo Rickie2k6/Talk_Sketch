@@ -14,6 +14,7 @@ if (saveKeyBtn) {
     }
 
     setUserApiKey(key);
+    if (apiKeyInput) apiKeyInput.value = "";
     alert("API key saved for this session.");
   };
 }

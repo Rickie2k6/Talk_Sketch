@@ -1,0 +1,22 @@
+{
+  "name": "talk-sketch",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "vite",
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "start:server": "node server.js"
+  },
+  "dependencies": {
+    "@excalidraw/excalidraw": "^0.18.0",
+    "@vitejs/plugin-react": "^5.1.4",
+    "express": "^4.21.2",
+    "openai": "^5.19.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "vite": "^7.3.1"
+  }
+}
