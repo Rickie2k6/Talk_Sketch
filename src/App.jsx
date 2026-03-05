@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import Whiteboard from "./Whiteboard";
+import Whiteboard from "../whiteboard/Whiteboard.jsx";
 import "./App.css";
 
 const supportsSpeechRecognition =
@@ -141,20 +141,11 @@ function App() {
       </div>
 
       <aside className="side-panel">
-        <h2 className="panel-title">TalkSketch</h2>
-
-        <div className="api-row">
-          <input
-            className="api-input"
-            type="password"
-            placeholder="Enter OpenAI API key"
-            value={apiKeyInput}
-            onChange={(event) => setApiKeyInput(event.target.value)}
-            autoComplete="off"
-          />
-          <button className="connect-btn" type="button" onClick={connectApiKey}>
-            Connect
-          </button>
+        <div className="panel-header">
+          <h2 className="panel-title">TalkSketch Assistant</h2>
+          <span className={`key-status ${apiKey ? "connected" : ""}`}>
+            {apiKey ? "API Connected" : "API Not Connected"}
+          </span>
         </div>
 
         <div className="chat-list">
@@ -184,6 +175,26 @@ function App() {
           <button className="send-btn" type="button" onClick={sendMessage} disabled={!canSend}>
             Send
           </button>
+        </div>
+
+        <div className="api-section">
+          <label className="api-label" htmlFor="api-key-input">
+            OpenAI API Key
+          </label>
+          <div className="api-row">
+            <input
+              id="api-key-input"
+              className="api-input"
+              type="password"
+              placeholder="Paste key (session only)"
+              value={apiKeyInput}
+              onChange={(event) => setApiKeyInput(event.target.value)}
+              autoComplete="off"
+            />
+            <button className="connect-btn" type="button" onClick={connectApiKey}>
+              Connect
+            </button>
+          </div>
         </div>
 
         <button

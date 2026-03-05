@@ -1,0 +1,92 @@
+[
+  {
+    "id": "deepmind-mathematics",
+    "name": "DeepMind Mathematics Dataset",
+    "description": "Generated school-level math problems for algebraic reasoning.",
+    "dataset_link": "https://github.com/google-deepmind/mathematics_dataset"
+  },
+  {
+    "id": "lample-charton-symbolic-math",
+    "name": "Deep Learning for Symbolic Mathematics",
+    "description": "Symbolic math benchmark for tasks like symbolic integration, ODE solving, and equation manipulation.",
+    "dataset_link": "https://github.com/facebookresearch/SymbolicMathematics"
+  },
+  {
+    "id": "feynman-symbolic-regression",
+    "name": "Feynman Symbolic Regression Database / AI Feynman benchmark",
+    "description": "Benchmark for recovering equations from data, especially physics equations.",
+    "dataset_link": "https://arxiv.org/abs/1905.11481"
+  },
+  {
+    "id": "srbench",
+    "name": "SRBench / SRBench++",
+    "description": "Benchmark suite for symbolic regression and equation discovery across many regression datasets.",
+    "dataset_link": "https://github.com/cavalab/srbench"
+  },
+  {
+    "id": "llm-srbench",
+    "name": "LLM-SRBench",
+    "description": "Benchmark for scientific equation discovery with large language models.",
+    "dataset_link": "https://arxiv.org/abs/2504.10415"
+  },
+  {
+    "id": "mawps",
+    "name": "MAWPS",
+    "description": "Repository of arithmetic and algebra word problems for text-to-equation tasks.",
+    "dataset_link": "https://aclanthology.org/N16-1136/"
+  },
+  {
+    "id": "draw-1k",
+    "name": "DRAW-1K",
+    "description": "Challenging and diverse algebra word-problem dataset with broad narrative and equation-system diversity.",
+    "dataset_link": "https://aclanthology.org/E17-1047/"
+  },
+  {
+    "id": "alg514",
+    "name": "ALG514",
+    "description": "Classic algebra word-problem benchmark commonly used for equation extraction and solving.",
+    "dataset_link": "https://github.com/johnsonkao0213/Formulate_and_Solve"
+  },
+  {
+    "id": "dolphin18k",
+    "name": "Dolphin18K",
+    "description": "Large-scale math word-problem dataset built from Yahoo! Answers.",
+    "dataset_link": "https://www.microsoft.com/en-us/research/wp-content/uploads/2015/08/dolphin18k.pdf"
+  },
+  {
+    "id": "math23k",
+    "name": "Math23K",
+    "description": "Chinese math word-problem benchmark with solution expressions and answers.",
+    "dataset_link": "https://opendatalab.com/OpenDataLab/Math23K"
+  },
+  {
+    "id": "ape210k",
+    "name": "APE210K",
+    "description": "Large-scale Chinese elementary-school math word-problem dataset with equations and gold answers.",
+    "dataset_link": "https://github.com/yuantiku/ape210k"
+  },
+  {
+    "id": "gsm8k",
+    "name": "GSM8K",
+    "description": "Grade-school math reasoning dataset with multi-step problems.",
+    "dataset_link": "https://github.com/openai/grade-school-math"
+  },
+  {
+    "id": "math",
+    "name": "MATH",
+    "description": "Competition-style math benchmark with full step-by-step solutions.",
+    "dataset_link": "https://github.com/hendrycks/math"
+  },
+  {
+    "id": "aqua-rat",
+    "name": "AQuA-RAT",
+    "description": "Algebra word-problem dataset with natural-language rationales.",
+    "dataset_link": "https://github.com/google-deepmind/AQuA"
+  },
+  {
+    "id": "mathqa",
+    "name": "MathQA",
+    "description": "Math word-problem dataset with operation programs for interpretable reasoning.",
+    "dataset_link": "https://math-qa.github.io/"
+  }
+]

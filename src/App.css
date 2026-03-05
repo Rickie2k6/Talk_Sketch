@@ -29,23 +29,65 @@ body {
 }
 
 .side-panel {
-  border-radius: 14px;
+  border-radius: 16px;
   border: 1px solid #d8deeb;
-  background: #f7f9ff;
-  padding: 12px;
+  background: linear-gradient(180deg, #f9fbff 0%, #f4f7ff 100%);
+  padding: 14px;
   display: grid;
-  grid-template-rows: auto 1fr auto auto;
-  gap: 10px;
+  grid-template-rows: auto minmax(280px, 1fr) auto auto auto;
+  gap: 12px;
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
 }
 
 .panel-title {
   margin: 0;
-  font-size: 16px;
+  font-size: 18px;
+  font-weight: 700;
+  color: #1f2a44;
+}
+
+.key-status {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: #7b8297;
+  background: #e9edf7;
+  border: 1px solid #d7deef;
+  border-radius: 999px;
+  padding: 5px 9px;
+}
+
+.key-status.connected {
+  color: #0e7d3f;
+  background: #e8f9ef;
+  border-color: #bfeccf;
+}
+
+.api-section {
+  border: 1px solid #d7def0;
+  border-radius: 12px;
+  background: #ffffff;
+  padding: 10px;
+}
+
+.api-label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #627093;
 }
 
 .api-row {
   display: grid;
-  grid-template-columns: 1fr auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 8px;
 }
 
@@ -55,6 +97,11 @@ body {
   border-radius: 10px;
   padding: 10px;
   font: inherit;
+}
+
+.api-input {
+  padding: 8px 10px;
+  font-size: 13px;
 }
 
 .connect-btn,
@@ -83,10 +130,11 @@ body {
 
 .chat-list {
   border: 1px solid #d7def0;
-  border-radius: 10px;
+  border-radius: 12px;
   background: #fff;
-  padding: 10px;
+  padding: 12px;
   overflow: auto;
+  box-shadow: inset 0 1px 0 #f5f7fd;
 }
 
 .chat-message {
