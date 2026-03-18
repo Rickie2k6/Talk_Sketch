@@ -6,6 +6,7 @@ export default defineConfig({
   server: {
     proxy: {
       "/analyze-sketch": "http://localhost:3001",
+      "/recognize-math": "http://localhost:3001",
     },
   },
 });

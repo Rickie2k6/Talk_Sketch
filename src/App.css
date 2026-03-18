@@ -34,7 +34,7 @@ body {
   background: linear-gradient(180deg, #f9fbff 0%, #f4f7ff 100%);
   padding: 14px;
   display: grid;
-  grid-template-rows: auto minmax(280px, 1fr) auto auto auto;
+  grid-template-rows: auto auto minmax(240px, 1fr) auto auto auto;
   gap: 12px;
 }
 
@@ -135,6 +135,37 @@ body {
   padding: 12px;
   overflow: auto;
   box-shadow: inset 0 1px 0 #f5f7fd;
+}
+
+.recognition-card {
+  border: 1px solid #d7def0;
+  border-radius: 12px;
+  background: #ffffff;
+  padding: 10px 12px;
+}
+
+.recognition-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: #627093;
+  margin-bottom: 6px;
+}
+
+.recognition-body {
+  font-size: 13px;
+  color: #1f2a44;
+  min-height: 24px;
+}
+
+.recognition-body code {
+  display: block;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: #f5f7fd;
+  border: 1px solid #e1e6f4;
+  border-radius: 8px;
+  padding: 8px;
 }
 
 .chat-message {
