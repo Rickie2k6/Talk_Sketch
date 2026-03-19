@@ -4,11 +4,13 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "vite",
-    "dev": "vite",
+    "start": "bash ./scripts/dev_server.sh",
+    "dev": "bash ./scripts/dev_server.sh",
     "build": "vite build",
+    "clean": "rm -rf dist",
     "preview": "vite preview",
-    "start:server": "node server.js"
+    "start:server": "bash ./scripts/start_server.sh",
+    "serve:prod": "NODE_ENV=production HOST=${HOST:-0.0.0.0} PORT=${PORT:-3001} bash ./scripts/start_server.sh"
   },
   "dependencies": {
     "@excalidraw/excalidraw": "^0.18.0",

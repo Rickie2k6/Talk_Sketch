@@ -1,6 +1,23 @@
+import { exportToBlob } from "@excalidraw/excalidraw";
 import { useEffect, useMemo, useRef, useState } from "react";
-import Whiteboard from "./library/Whiteboard.jsx";
 import "./App.css";
+import Whiteboard from "./library/Whiteboard.jsx";
+
+const RECOGNITION_DEBOUNCE_MS = 450;
+const RECOGNITION_EXPORT_PADDING = 24;
+const RECOGNITION_REQUEST_TIMEOUT_MS = 20000;
+const EXPRESSION_QUESTION_PATTERNS = [
+  "math expression",
+  "equation",
+  "recognize the handwritten math expression",
+  "recognize the expression",
+  "what is on the whiteboard",
+  "what's on the whiteboard",
+  "what is on the board",
+  "what's on the board",
+  "read the whiteboard",
+  "read the board",
+];
 
 const supportsSpeechRecognition =
   typeof window !== "undefined" &&
@@ -34,6 +51,42 @@ function createRecognition({ onText, onStop }) {
   return rec;
 }
 
+function isExpressionQuestion(message) {
+  const value = message.trim().toLowerCase();
+  return EXPRESSION_QUESTION_PATTERNS.some((pattern) => value.includes(pattern));
+}
+
+function blobToDataURL(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => resolve(typeof reader.result === "string" ? reader.result : "");
+    reader.onerror = () => reject(reader.error || new Error("Unable to read exported scene."));
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function exportSceneImage(excalidrawAPI) {
+  if (!excalidrawAPI) return "";
+
+  const elements = excalidrawAPI.getSceneElements();
+  if (!elements.length) return "";
+
+  const blob = await exportToBlob({
+    elements,
+    appState: {
+      ...excalidrawAPI.getAppState(),
+      exportBackground: true,
+      exportWithDarkMode: false,
+      viewBackgroundColor: "#ffffff",
+    },
+    files: excalidrawAPI.getFiles(),
+    mimeType: "image/png",
+    exportPadding: RECOGNITION_EXPORT_PADDING,
+  });
+
+  return blobToDataURL(blob);
+}
+
 function App() {
   const [excalidrawAPI, setExcalidrawAPI] = useState(null);
   const [sceneElements, setSceneElements] = useState([]);
@@ -44,12 +97,29 @@ function App() {
   const [isRecording, setIsRecording] = useState(false);
   const [isRecognizingMath, setIsRecognizingMath] = useState(false);
   const [recognizedMath, setRecognizedMath] = useState("");
+  const [recognitionError, setRecognitionError] = useState("");
   const [messages, setMessages] = useState([]);
   const recognitionRef = useRef(null);
   const recognizeAbortRef = useRef(null);
   const lastSceneSignatureRef = useRef("");
+  const lastObservedSceneSignatureRef = useRef("");
+  const recognitionRequestSerialRef = useRef(0);
 
   const canSend = useMemo(() => Boolean(chatInput.trim()) && !isSending, [chatInput, isSending]);
+
+  const handleSceneChange = (elements) => {
+    const nextElements = Array.isArray(elements) ? elements : [];
+    const signature = nextElements
+      .map((element) => `${element?.id || "unknown"}:${element?.version || 0}:${element?.isDeleted ? 1 : 0}`)
+      .join("|");
+
+    if (signature === lastObservedSceneSignatureRef.current) {
+      return;
+    }
+
+    lastObservedSceneSignatureRef.current = signature;
+    setSceneElements([...nextElements]);
+  };
 
   useEffect(() => {
     return () => {
@@ -62,54 +132,105 @@ function App() {
     };
   }, []);
 
-  useEffect(() => {
-    if (!apiKey) {
-      setRecognizedMath("");
-      return;
+  const recognizeScene = async ({ preserveExistingMath = false } = {}) => {
+    if (!excalidrawAPI) return "";
+
+    const imageData = await exportSceneImage(excalidrawAPI);
+    if (!imageData) {
+      if (!preserveExistingMath) {
+        setRecognizedMath("");
+      }
+      setRecognitionError("");
+      return "";
     }
 
+    if (recognizeAbortRef.current) {
+      recognizeAbortRef.current.abort();
+    }
+
+    const abortController = new AbortController();
+    recognizeAbortRef.current = abortController;
+    const requestSerial = recognitionRequestSerialRef.current + 1;
+    recognitionRequestSerialRef.current = requestSerial;
+    const timeoutId = window.setTimeout(() => abortController.abort(), RECOGNITION_REQUEST_TIMEOUT_MS);
+
+    setIsRecognizingMath(true);
+
+    try {
+      const response = await fetch("/recognize-math", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ imageData }),
+        signal: abortController.signal,
+      });
+
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null);
+        throw new Error(payload?.error || "Math recognition failed");
+      }
+
+      const data = await response.json();
+      const latex = typeof data?.latex === "string" ? data.latex.trim() : "";
+
+      if (recognitionRequestSerialRef.current === requestSerial) {
+        setRecognizedMath(latex);
+        setRecognitionError("");
+      }
+
+      return latex;
+    } catch (error) {
+      if (error?.name === "AbortError") {
+        const timeoutMessage =
+          "Math recognition is taking longer than expected. Please wait a moment and try again.";
+        if (recognitionRequestSerialRef.current === requestSerial) {
+          if (!preserveExistingMath) {
+            setRecognizedMath("");
+          }
+          setRecognitionError(timeoutMessage);
+        }
+        return "";
+      }
+
+      const message = error?.message || "Math recognition failed.";
+      if (recognitionRequestSerialRef.current === requestSerial) {
+        if (!preserveExistingMath) {
+          setRecognizedMath("");
+        }
+        setRecognitionError(message);
+      }
+      return "";
+    } finally {
+      window.clearTimeout(timeoutId);
+      if (recognizeAbortRef.current === abortController) {
+        recognizeAbortRef.current = null;
+      }
+      if (recognitionRequestSerialRef.current === requestSerial) {
+        setIsRecognizingMath(false);
+      }
+    }
+  };
+
+  useEffect(() => {
     const activeElements = sceneElements.filter((el) => !el?.isDeleted);
-    if (activeElements.length === 0) {
+    if (!excalidrawAPI || activeElements.length === 0) {
       setRecognizedMath("");
+      setRecognitionError("");
+      lastSceneSignatureRef.current = "";
       return;
     }
 
     const signature = activeElements.map((el) => `${el.id}:${el.version}`).join("|");
     if (signature === lastSceneSignatureRef.current) return;
 
-    const timer = setTimeout(async () => {
-      if (recognizeAbortRef.current) recognizeAbortRef.current.abort();
-      const abortController = new AbortController();
-      recognizeAbortRef.current = abortController;
-      setIsRecognizingMath(true);
-
-      try {
-        const response = await fetch("/recognize-math", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ apiKey, elements: activeElements }),
-          signal: abortController.signal,
-        });
-
-        if (!response.ok) {
-          const text = await response.text().catch(() => "");
-          throw new Error(text || "Math recognition failed");
-        }
-
-        const data = await response.json();
-        setRecognizedMath(typeof data?.latex === "string" ? data.latex : "");
+    const recognitionTimer = setTimeout(async () => {
+      const latex = await recognizeScene({ preserveExistingMath: false });
+      if (latex) {
         lastSceneSignatureRef.current = signature;
-      } catch (error) {
-        if (error?.name !== "AbortError") {
-          setRecognizedMath("");
-        }
-      } finally {
-        setIsRecognizingMath(false);
       }
-    }, 900);
+    }, RECOGNITION_DEBOUNCE_MS);
 
-    return () => clearTimeout(timer);
-  }, [apiKey, sceneElements]);
+    return () => clearTimeout(recognitionTimer);
+  }, [excalidrawAPI, sceneElements]);
 
   const appendMessage = (role, text) => {
     setMessages((prev) => [...prev, { id: `${Date.now()}-${Math.random()}`, role, text }]);
@@ -128,7 +249,8 @@ function App() {
   const sendMessage = async () => {
     const message = chatInput.trim();
     if (!message || isSending) return;
-    if (!apiKey) {
+    const wantsExpressionOnly = isExpressionQuestion(message);
+    if (!apiKey && !wantsExpressionOnly) {
       alert("Please connect your API key first.");
       return;
     }
@@ -136,6 +258,27 @@ function App() {
     const elements = excalidrawAPI?.getSceneElements?.() || [];
     appendMessage("user", message);
     setChatInput("");
+
+    let currentRecognizedMath = recognizedMath;
+    if (wantsExpressionOnly && elements.some((element) => !element?.isDeleted)) {
+      currentRecognizedMath = await recognizeScene({ preserveExistingMath: true });
+    }
+
+    if (wantsExpressionOnly && currentRecognizedMath) {
+      setRecognizedMath(currentRecognizedMath);
+      appendMessage("assistant", currentRecognizedMath);
+      return;
+    }
+
+    if (wantsExpressionOnly) {
+      appendMessage(
+        "assistant",
+        recognitionError ||
+          "CoMER could not confidently read the handwritten math yet. Try waiting a moment or redrawing the symbols a bit more clearly.",
+      );
+      return;
+    }
+
     setIsSending(true);
 
     try {
@@ -146,6 +289,7 @@ function App() {
           apiKey,
           elements,
           message,
+          recognizedMath: currentRecognizedMath,
         }),
       });
 
@@ -191,28 +335,42 @@ function App() {
     recognition.start();
   };
 
+  const insertRecognizedMath = () => {
+    if (!recognizedMath) return;
+    setChatInput((prev) => (prev.trim() ? `${prev.trim()} ${recognizedMath}` : recognizedMath));
+  };
+
   return (
     <div className="app-shell">
       <div className="board-area">
-        <Whiteboard onApiReady={setExcalidrawAPI} onSceneChange={setSceneElements} />
+        <Whiteboard onApiReady={setExcalidrawAPI} onSceneChange={handleSceneChange} />
       </div>
 
       <aside className="side-panel">
         <div className="panel-header">
           <h2 className="panel-title">TalkSketch Assistant</h2>
           <span className={`key-status ${apiKey ? "connected" : ""}`}>
-            {apiKey ? "API Connected" : "API Not Connected"}
+            {apiKey ? "Chat API Connected" : "Chat API Not Connected"}
           </span>
         </div>
 
         <div className="recognition-card">
           <div className="recognition-title">Live Math Recognition</div>
           <div className="recognition-body">
-            {!apiKey ? "Connect API key to enable recognition." : null}
-            {apiKey && isRecognizingMath ? "Recognizing current handwriting..." : null}
-            {apiKey && !isRecognizingMath && recognizedMath ? <code>{recognizedMath}</code> : null}
-            {apiKey && !isRecognizingMath && !recognizedMath ? "Write math on the board to recognize." : null}
+            {isRecognizingMath ? "Recognizing current handwriting with CoMER..." : null}
+            {!isRecognizingMath && recognitionError ? (
+              <p className="recognition-error">{recognitionError}</p>
+            ) : null}
+            {!isRecognizingMath && !recognitionError && recognizedMath ? <code>{recognizedMath}</code> : null}
+            {!isRecognizingMath && !recognitionError && !recognizedMath ? "Write math on the board to recognize." : null}
           </div>
+          {recognizedMath ? (
+            <div className="recognition-actions">
+              <button className="ghost-btn" type="button" onClick={insertRecognizedMath}>
+                Insert Into Chat
+              </button>
+            </div>
+          ) : null}
         </div>
 
         <div className="chat-list">
@@ -226,6 +384,11 @@ function App() {
         </div>
 
         <div className="chat-form">
+          {recognizedMath ? (
+            <div className="chat-context">
+              Chat will include CoMER math context: <code>{recognizedMath}</code>
+            </div>
+          ) : null}
           <input
             className="chat-input"
             type="text"

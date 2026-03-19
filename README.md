@@ -1,99 +1,90 @@
-<div align="center">    
- 
-# CoMER: Modeling Coverage for Transformer-based Handwritten Mathematical Expression Recognition  
- 
-[![arXiv](https://img.shields.io/badge/arXiv-2207.04410-b31b1b.svg)](https://arxiv.org/abs/2207.04410)
+# Talk Sketch
 
-</div>
+Talk Sketch is a whiteboard-style math assistant built with React, Excalidraw, Express, OpenAI, and CoMER.
 
-## Project structure
-```bash
-├── README.md
-├── comer               # model definition folder
-├── convert2symLG       # official tool to convert latex to symLG format
-├── lgeval              # official tool to compare symLGs in two folder
-├── config.yaml         # config for CoMER hyperparameter
-├── data.zip
-├── eval_all.sh         # script to evaluate model on all CROHME test sets
-├── example
-│   ├── UN19_1041_em_595.bmp
-│   └── example.ipynb   # HMER demo
-├── lightning_logs      # training logs
-│   └── version_0
-│       ├── checkpoints
-│       │   └── epoch=151-step=57151-val_ExpRate=0.6365.ckpt
-│       ├── config.yaml
-│       └── hparams.yaml
-├── requirements.txt
-├── scripts             # evaluation scripts
-├── setup.cfg
-├── setup.py
-└── train.py
+It lets you:
+
+- draw handwritten math on the board
+- recognize expressions with the local CoMER model
+- ask the chat assistant questions about the current sketch
+- use speech input for the chat box
+
+## Stack
+
+- Frontend: React + Vite + Excalidraw
+- Backend: Express
+- Math recognition: CoMER checkpoint running in a Python worker
+- Chat: OpenAI API
+
+## Project Layout
+
+```text
+src/                  React app
+scripts/              helper scripts and the CoMER worker
+server.js             Express API for chat and recognition
+comer/                CoMER model code
+lightning_logs/       bundled CoMER checkpoints
+example/              sample handwritten math assets
 ```
 
-## Install dependencies   
-```bash
-cd CoMER
-# install project   
-conda create -y -n CoMER python=3.7
-conda activate CoMER
-conda install pytorch=1.8.1 torchvision=0.2.2 cudatoolkit=11.1 pillow=8.4.0 -c pytorch -c nvidia
-# training dependency
-conda install pytorch-lightning=1.4.9 torchmetrics=0.6.0 -c conda-forge
-# evaluating dependency
-conda install pandoc=1.19.2.1 -c conda-forge
-pip install -e .
- ```
+## Run
 
-## Training
-Next, navigate to CoMER folder and run `train.py`. It may take **7~8** hours on **4** NVIDIA 2080Ti gpus using ddp.
-```bash
-# train CoMER(Fusion) model using 4 gpus and ddp
-python train.py --config config.yaml  
-```
+Open two terminals from the project root.
 
-You may change the `config.yaml` file to train different models
-```yaml
-# train BTTR(baseline) model
-cross_coverage: false
-self_coverage: false
-
-# train CoMER(Self) model
-cross_coverage: false
-self_coverage: true
-
-# train CoMER(Cross) model
-cross_coverage: true
-self_coverage: false
-
-# train CoMER(Fusion) model
-cross_coverage: true
-self_coverage: true
-```
-
-For single gpu user, you may change the `config.yaml` file to
-```yaml
-gpus: 1
-# gpus: 4
-# accelerator: ddp
-```
-
-## Evaluation
-Metrics used in validation during the training process is not accurate.
-
-For accurate metrics reported in the paper, please use tools officially provided by CROHME 2019 oganizer:
-
-A trained CoMER(Fusion) weight checkpoint has been saved in `lightning_logs/version_0`
-
-
+Terminal 1:
 
 ```bash
-perl --version  # make sure you have installed perl 5
+npm run start:server
+```
 
-unzip -q data.zip
+Terminal 2:
 
-# evaluation
-# evaluate model in lightning_logs/version_0 on all CROHME test sets
-# results will be printed in the screen and saved to lightning_logs/version_0 folder
-bash eval_all.sh 0
+```bash
+npm run dev
+```
+
+Then open `http://127.0.0.1:5174`.
+
+## Deploy On A Remote Server
+
+For a Linux server such as Wukong, use the production flow so Express serves the built frontend and API from one port.
+
+1. Install dependencies and make sure the Python environment for CoMER is available.
+2. Build the frontend:
+
+```bash
+npm install
+npm run build
+```
+
+3. Start the app in production mode on a network-accessible host:
+
+```bash
+HOST=0.0.0.0 PORT=3001 COMER_PYTHON_BIN=/path/to/python npm run serve:prod
+```
+
+4. Open `http://<server-hostname>:3001`.
+
+Useful environment variables:
+
+- `HOST`: bind address for the Express server, for example `0.0.0.0`
+- `PORT`: backend and production web port
+- `COMER_PYTHON_BIN`: Python binary with the CoMER dependencies installed
+- `COMER_CHECKPOINT`: optional path to a different checkpoint file
+- `COMER_DEVICE`: optional inference device such as `cpu`, `cuda`, or `mps`
+- `VITE_HOST`, `VITE_PORT`, `VITE_BACKEND_URL`: dev-mode overrides for remote Vite usage
+
+## Notes
+
+- `npm run start:server` automatically resolves the `talk_sketch` conda environment for CoMER if it exists.
+- The first recognition request is slower because the model checkpoint has to load into memory.
+- Chat responses still require an OpenAI API key in the app UI.
+
+## Useful Commands
+
+```bash
+npm run dev
+npm run build
+npm run clean
+npm run start:server
 ```

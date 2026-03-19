@@ -2,106 +2,155 @@ import express from "express";
 import OpenAI from "openai";
 import path from "path";
 import { fileURLToPath } from "url";
-import fs from "fs";
 import readline from "readline";
 import { spawn } from "child_process";
+import { randomUUID } from "crypto";
 
 const app = express();
+const HOST = process.env.HOST || "127.0.0.1";
 const PORT = process.env.PORT || 3001;
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const DATASET_ARCHIVE = process.env.MATH_DATASET_ARCHIVE || path.join(__dirname, "mathwriting-2024.tgz");
-let symbolLabelsPromise = null;
+const DIST_DIR = path.join(__dirname, "dist");
+const DEV_FRONTEND_URL =
+  process.env.DEV_FRONTEND_URL || `http://${process.env.VITE_HOST || "127.0.0.1"}:${process.env.VITE_PORT || "5174"}`;
+const PYTHON_BIN = process.env.COMER_PYTHON_BIN || "python3";
+const COMER_WORKER_PATH = path.join(__dirname, "scripts", "comer_worker.py");
+let comerWorkerPromise = null;
+let comerWorker = null;
 
-app.use(express.json({ limit: "2mb" }));
-app.use(express.static(__dirname));
+app.use(express.json({ limit: "10mb" }));
 
-function compactElementsForRecognition(elements) {
-  return elements
-    .filter((el) => el && !el.isDeleted)
-    .slice(0, 300)
-    .map((el) => ({
-      id: el.id,
-      type: el.type,
-      x: el.x,
-      y: el.y,
-      width: el.width,
-      height: el.height,
-      text: el.text || "",
-      points: Array.isArray(el.points) ? el.points : [],
-    }));
+if (process.env.NODE_ENV === "production") {
+  app.use(express.static(DIST_DIR));
+} else {
+  app.get("/", (_req, res) => {
+    res.type("text/plain").send(
+      `Talk Sketch backend is running.\nOpen the frontend at ${DEV_FRONTEND_URL} after starting \`npm run dev\`.`,
+    );
+  });
 }
 
-function sanitizeModelJson(text) {
-  if (!text) return null;
-  const trimmed = text.trim();
-  const withoutFence = trimmed.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
-  const firstBrace = withoutFence.indexOf("{");
-  const lastBrace = withoutFence.lastIndexOf("}");
-  if (firstBrace === -1 || lastBrace === -1 || lastBrace < firstBrace) return null;
-  try {
-    return JSON.parse(withoutFence.slice(firstBrace, lastBrace + 1));
-  } catch {
-    return null;
-  }
-}
-
-function readSymbolsFromArchive() {
+function startCoMERWorker() {
   return new Promise((resolve, reject) => {
-    const labelSet = new Set();
-    const tar = spawn("tar", ["-xOf", DATASET_ARCHIVE, "mathwriting-2024/symbols.jsonl"], {
-      stdio: ["ignore", "pipe", "pipe"],
+    const child = spawn(PYTHON_BIN, ["-u", COMER_WORKER_PATH], {
+      cwd: __dirname,
+      env: { ...process.env, PYTHONUNBUFFERED: "1" },
+      stdio: ["pipe", "pipe", "pipe"],
     });
 
-    let stderr = "";
-    tar.stderr.on("data", (chunk) => {
-      stderr += String(chunk);
-    });
+    const pending = new Map();
+    const stderrChunks = [];
+    let isReady = false;
 
-    const rl = readline.createInterface({ input: tar.stdout, crlfDelay: Infinity });
-    rl.on("line", (line) => {
-      const value = line.trim();
-      if (!value) return;
-      try {
-        const row = JSON.parse(value);
-        if (typeof row.label === "string" && row.label.trim()) {
-          labelSet.add(row.label.trim());
-        }
-      } catch {
-        // Skip malformed lines.
+    const settleFailure = (message) => {
+      const error = new Error(message);
+      comerWorkerPromise = null;
+      if (!isReady) {
+        reject(error);
       }
-    });
 
-    rl.on("close", () => {
-      // Wait for process exit event.
-    });
+      for (const { reject: rejectRequest } of pending.values()) {
+        rejectRequest(error);
+      }
+      pending.clear();
+      comerWorker = null;
+    };
 
-    tar.on("error", reject);
-    tar.on("close", (code) => {
-      if (code !== 0) {
-        reject(new Error(stderr || "Unable to read dataset archive"));
+    const stdout = readline.createInterface({ input: child.stdout, crlfDelay: Infinity });
+    stdout.on("line", (line) => {
+      const trimmed = line.trim();
+      if (!trimmed) return;
+
+      let payload;
+      try {
+        payload = JSON.parse(trimmed);
+      } catch {
         return;
       }
-      resolve(Array.from(labelSet).sort());
+
+      if (payload.event === "ready") {
+        isReady = true;
+        comerWorker = { child, pending, readyState: payload };
+        resolve(comerWorker);
+        return;
+      }
+
+      if (payload.event === "fatal") {
+        settleFailure(payload.error || "CoMER startup failed.");
+        return;
+      }
+
+      if (!payload.id) return;
+
+      const request = pending.get(payload.id);
+      if (!request) return;
+      pending.delete(payload.id);
+
+      if (payload.ok) {
+        request.resolve(payload);
+      } else {
+        request.reject(new Error(payload.error || "CoMER recognition failed."));
+      }
+    });
+
+    child.stderr.on("data", (chunk) => {
+      stderrChunks.push(String(chunk));
+    });
+
+    child.once("error", (error) => {
+      settleFailure(`Unable to start CoMER worker: ${error.message}`);
+    });
+
+    child.once("exit", (code, signal) => {
+      const stderr = stderrChunks.join("").trim();
+      const reason = stderr || `CoMER worker exited (${signal || code || "unknown"}).`;
+      settleFailure(reason);
     });
   });
 }
 
-async function loadSymbolLabels() {
-  if (symbolLabelsPromise) return symbolLabelsPromise;
-  symbolLabelsPromise = (async () => {
-    if (!fs.existsSync(DATASET_ARCHIVE)) return [];
-    try {
-      return await readSymbolsFromArchive();
-    } catch {
-      return [];
-    }
-  })();
-  return symbolLabelsPromise;
+async function ensureCoMERWorker() {
+  if (!comerWorkerPromise) {
+    comerWorkerPromise = startCoMERWorker();
+  }
+  return comerWorkerPromise;
 }
 
+async function requestCoMERRecognition(imageData) {
+  const worker = await ensureCoMERWorker();
+
+  return new Promise((resolve, reject) => {
+    const id = randomUUID();
+    worker.pending.set(id, { resolve, reject });
+
+    worker.child.stdin.write(`${JSON.stringify({ id, imageData })}\n`, (error) => {
+      if (!error) return;
+      worker.pending.delete(id);
+      reject(new Error(`Unable to send request to CoMER worker: ${error.message}`));
+    });
+  });
+}
+
+process.on("exit", () => {
+  if (comerWorker?.child) {
+    comerWorker.child.kill();
+  }
+});
+
 app.post("/analyze-sketch", async (req, res) => {
-  const { apiKey, elements, message } = req.body || {};
+  const { apiKey, elements, message, recognizedMath } = req.body || {};
+  const prompt = typeof message === "string" ? message.trim() : "";
+  const recognized = typeof recognizedMath === "string" ? recognizedMath.trim() : "";
+  const wantsExpressionOnly =
+    /math expression|equation|what is on the (white)?board|what's on the (white)?board|read the (white)?board/i.test(
+      prompt,
+    );
+
+  if (recognized && wantsExpressionOnly) {
+    res.json({ result: recognized });
+    return;
+  }
 
   if (typeof apiKey !== "string" || !apiKey.startsWith("sk-")) {
     res.status(400).json({ error: "Invalid API key." });
@@ -109,7 +158,6 @@ app.post("/analyze-sketch", async (req, res) => {
   }
 
   const safeElements = Array.isArray(elements) ? elements : [];
-  const prompt = typeof message === "string" ? message.trim() : "";
 
   try {
     const client = new OpenAI({ apiKey });
@@ -124,6 +172,7 @@ app.post("/analyze-sketch", async (req, res) => {
           role: "user",
           content: [
             `User message: ${prompt || "(none)"}`,
+            `Recognized math from CoMER: ${typeof recognizedMath === "string" && recognizedMath.trim() ? recognizedMath.trim() : "(none)"}`,
             `Sketch JSON: ${JSON.stringify(safeElements)}`,
           ].join("\n\n"),
         },
@@ -138,70 +187,37 @@ app.post("/analyze-sketch", async (req, res) => {
 });
 
 app.post("/recognize-math", async (req, res) => {
-  const { apiKey, elements } = req.body || {};
+  const { imageData } = req.body || {};
 
-  if (typeof apiKey !== "string" || !apiKey.startsWith("sk-")) {
-    res.status(400).json({ error: "Invalid API key." });
+  if (typeof imageData !== "string" || !imageData.trim()) {
+    res.json({ latex: "", normalized: "", score: null, model: "CoMER" });
     return;
   }
-
-  if (!Array.isArray(elements) || elements.length === 0) {
-    res.json({ latex: "", normalized: "", confidence: 0 });
-    return;
-  }
-
-  const compactElements = compactElementsForRecognition(elements);
-  const symbols = await loadSymbolLabels();
-  const symbolHint = symbols.length > 0 ? symbols.slice(0, 800).join(", ") : "";
 
   try {
-    const client = new OpenAI({ apiKey });
-    const completion = await client.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: [
-        {
-          role: "system",
-          content: [
-            "You are a handwriting math recognizer.",
-            "Given Excalidraw stroke elements, return the most likely LaTeX equation/expression.",
-            "Return strict JSON only:",
-            '{"latex":"", "normalized":"", "confidence":0}',
-            "confidence must be a number between 0 and 1.",
-          ].join("\n"),
-        },
-        {
-          role: "user",
-          content: [
-            symbolHint
-              ? `These symbol labels are from the local MathWriting dataset and should be preferred: ${symbolHint}`
-              : "No local symbol hints available.",
-            `Stroke elements JSON: ${JSON.stringify(compactElements)}`,
-          ].join("\n\n"),
-        },
-      ],
-    });
-
-    const text = completion.choices?.[0]?.message?.content || "";
-    const parsed = sanitizeModelJson(text);
-    if (!parsed) {
-      res.json({
-        latex: "",
-        normalized: "",
-        confidence: 0,
-        error: "recognition_parse_failed",
-      });
-      return;
-    }
-
+    const result = await requestCoMERRecognition(imageData);
     res.json({
-      latex: typeof parsed.latex === "string" ? parsed.latex : "",
-      normalized: typeof parsed.normalized === "string" ? parsed.normalized : "",
-      confidence: Number.isFinite(parsed.confidence) ? Math.max(0, Math.min(1, parsed.confidence)) : 0,
-      symbolCount: symbols.length,
+      latex: typeof result.latex === "string" ? result.latex : "",
+      normalized: typeof result.normalized === "string" ? result.normalized : "",
+      score: Number.isFinite(result.score) ? result.score : null,
+      imageSize: result.imageSize || null,
+      model: "CoMER",
+      device: typeof result.device === "string" ? result.device : null,
     });
-  } catch {
-    res.status(400).json({ error: "Math recognition failed." });
+  } catch (error) {
+    res.status(503).json({
+      error: error instanceof Error ? error.message : "CoMER recognition failed.",
+      model: "CoMER",
+    });
   }
 });
 
-app.listen(PORT);
+if (process.env.NODE_ENV === "production") {
+  app.get("*", (_req, res) => {
+    res.sendFile(path.join(DIST_DIR, "index.html"));
+  });
+}
+
+app.listen(PORT, HOST, () => {
+  console.log(`Talk Sketch backend listening on http://${HOST}:${PORT}`);
+});

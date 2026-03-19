@@ -168,6 +168,16 @@ body {
   padding: 8px;
 }
 
+.recognition-error {
+  margin: 0;
+  color: #9c233f;
+  line-height: 1.4;
+}
+
+.recognition-actions {
+  margin-top: 8px;
+}
+
 .chat-message {
   margin-bottom: 10px;
 }
@@ -188,6 +198,33 @@ body {
   display: grid;
   grid-template-columns: 1fr auto;
   gap: 8px;
+}
+
+.chat-context {
+  grid-column: 1 / -1;
+  font-size: 12px;
+  color: #5c6785;
+  background: #eef3ff;
+  border: 1px solid #d8e1fb;
+  border-radius: 10px;
+  padding: 8px 10px;
+}
+
+.chat-context code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  white-space: pre-wrap;
+}
+
+.ghost-btn {
+  border: 1px solid #c4cfeb;
+  border-radius: 10px;
+  padding: 8px 10px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  background: #f7f9ff;
+  color: #243355;
+  cursor: pointer;
 }
 
 .hint {

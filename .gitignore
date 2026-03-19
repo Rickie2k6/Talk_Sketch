@@ -123,6 +123,9 @@ venv.bak/
 # IDEs
 .idea
 .vscode
+.DS_Store
+node_modules/
+dist/
 
 # seed project
 result.zip
