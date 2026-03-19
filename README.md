@@ -87,4 +87,5 @@ npm run dev
 npm run build
 npm run clean
 npm run start:server
+npm run serve:prod
 ```
