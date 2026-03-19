@@ -157,6 +157,32 @@ body {
   min-height: 24px;
 }
 
+.recognition-result {
+  display: grid;
+  gap: 8px;
+}
+
+.recognition-preview {
+  font-family: "Times New Roman", Georgia, serif;
+  font-size: 30px;
+  line-height: 1.25;
+  color: #16213d;
+  background: linear-gradient(180deg, #ffffff 0%, #f6f8ff 100%);
+  border: 1px solid #d8e1fb;
+  border-radius: 10px;
+  padding: 12px;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
+.recognition-raw-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: #6f7b99;
+}
+
 .recognition-body code {
   display: block;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;

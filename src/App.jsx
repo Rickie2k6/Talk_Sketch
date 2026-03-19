@@ -56,6 +56,41 @@ function isExpressionQuestion(message) {
   return EXPRESSION_QUESTION_PATTERNS.some((pattern) => value.includes(pattern));
 }
 
+function formatRecognizedMathPreview(latex) {
+  if (typeof latex !== "string") return "";
+
+  return latex
+    .replace(/\\cdot/g, "·")
+    .replace(/\\times/g, "×")
+    .replace(/\\div/g, "÷")
+    .replace(/\\pm/g, "±")
+    .replace(/\\neq/g, "≠")
+    .replace(/\\leq/g, "≤")
+    .replace(/\\geq/g, "≥")
+    .replace(/\\rightarrow/g, "→")
+    .replace(/\\left|\\right/g, "")
+    .replace(/\\limits/g, "")
+    .replace(/\\sum/g, "∑")
+    .replace(/\\int/g, "∫")
+    .replace(/\\sqrt/g, "√")
+    .replace(/\\alpha/g, "α")
+    .replace(/\\beta/g, "β")
+    .replace(/\\gamma/g, "γ")
+    .replace(/\\theta/g, "θ")
+    .replace(/\\pi/g, "π")
+    .replace(/\\lambda/g, "λ")
+    .replace(/\\mu/g, "μ")
+    .replace(/\\sigma/g, "σ")
+    .replace(/\\Delta/g, "Δ")
+    .replace(/\\infty/g, "∞")
+    .replace(/\\ /g, " ")
+    .replace(/[{}]/g, "")
+    .replace(/\s+/g, " ")
+    .replace(/\s*_\s*/g, "_")
+    .replace(/\s*\^\s*/g, "^")
+    .trim();
+}
+
 function blobToDataURL(blob) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -106,6 +141,10 @@ function App() {
   const recognitionRequestSerialRef = useRef(0);
 
   const canSend = useMemo(() => Boolean(chatInput.trim()) && !isSending, [chatInput, isSending]);
+  const recognizedMathPreview = useMemo(
+    () => formatRecognizedMathPreview(recognizedMath),
+    [recognizedMath],
+  );
 
   const handleSceneChange = (elements) => {
     const nextElements = Array.isArray(elements) ? elements : [];
@@ -361,7 +400,13 @@ function App() {
             {!isRecognizingMath && recognitionError ? (
               <p className="recognition-error">{recognitionError}</p>
             ) : null}
-            {!isRecognizingMath && !recognitionError && recognizedMath ? <code>{recognizedMath}</code> : null}
+            {!isRecognizingMath && !recognitionError && recognizedMath ? (
+              <div className="recognition-result">
+                <div className="recognition-preview">{recognizedMathPreview || recognizedMath}</div>
+                <div className="recognition-raw-label">Raw CoMER Output</div>
+                <code>{recognizedMath}</code>
+              </div>
+            ) : null}
             {!isRecognizingMath && !recognitionError && !recognizedMath ? "Write math on the board to recognize." : null}
           </div>
           {recognizedMath ? (
