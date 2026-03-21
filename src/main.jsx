@@ -1,6 +1,6 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import "@excalidraw/excalidraw/index.css";
+import "./styles/excalidraw.css";
 import App from "./App";
 
 class FatalErrorBoundary extends React.Component {
