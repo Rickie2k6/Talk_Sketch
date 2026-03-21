@@ -263,9 +263,20 @@ def find_content_bbox(image):
 
 
 def preprocess_image(image_bytes, image_module):
+    import numpy as np
+    from PIL import ImageOps
+
     image = image_module.open(io.BytesIO(image_bytes)).convert("RGBA")
     background = image_module.new("RGBA", image.size, (255, 255, 255, 255))
     image = image_module.alpha_composite(background, image).convert("L")
+
+    # CoMER is trained for dark strokes on a light background. If the exported
+    # scene is mostly dark, treat it as a dark-theme canvas and invert it so the
+    # handwriting becomes dark on white before cropping and inference.
+    grayscale = np.array(image, dtype=np.uint8)
+    dark_ratio = float((grayscale < CONTENT_THRESHOLD).mean())
+    if dark_ratio > 0.5:
+        image = ImageOps.invert(image)
 
     bbox = find_content_bbox(image)
     if bbox:
