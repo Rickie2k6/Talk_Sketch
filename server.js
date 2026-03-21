@@ -15,12 +15,12 @@ const __dirname = path.dirname(__filename);
 const DIST_DIR = path.join(__dirname, "dist");
 const DEV_FRONTEND_URL =
   process.env.DEV_FRONTEND_URL || `http://${process.env.VITE_HOST || "127.0.0.1"}:${process.env.VITE_PORT || "5174"}`;
-const PYTHON_BIN = process.env.COMER_PYTHON_BIN || "python3";
-const COMER_WORKER_PATH = path.join(__dirname, "scripts", "comer_worker.py");
-const COMER_WARMUP_SAMPLE_PATH = path.join(__dirname, "example", "UN19_1041_em_595.bmp");
+const PYTHON_BIN = process.env.PIX2TEXT_PYTHON_BIN || process.env.MATH_OCR_PYTHON_BIN || "python3";
+const OCR_WORKER_PATH = path.join(__dirname, "scripts", "pix2text_worker.py");
+const OCR_WARMUP_SAMPLE_PATH = path.join(__dirname, "example", "UN19_1041_em_595.bmp");
 const RECOGNITION_CACHE_LIMIT = 64;
-let comerWorkerPromise = null;
-let comerWorker = null;
+let ocrWorkerPromise = null;
+let ocrWorker = null;
 const recognitionCache = new Map();
 
 app.use(express.json({ limit: "10mb" }));
@@ -55,9 +55,9 @@ if (process.env.NODE_ENV === "production") {
   });
 }
 
-function startCoMERWorker() {
+function startRecognitionWorker() {
   return new Promise((resolve, reject) => {
-    const child = spawn(PYTHON_BIN, ["-u", COMER_WORKER_PATH], {
+    const child = spawn(PYTHON_BIN, ["-u", OCR_WORKER_PATH], {
       cwd: __dirname,
       env: { ...process.env, PYTHONUNBUFFERED: "1" },
       stdio: ["pipe", "pipe", "pipe"],
@@ -69,7 +69,7 @@ function startCoMERWorker() {
 
     const settleFailure = (message) => {
       const error = new Error(message);
-      comerWorkerPromise = null;
+      ocrWorkerPromise = null;
       if (!isReady) {
         reject(error);
       }
@@ -78,7 +78,7 @@ function startCoMERWorker() {
         rejectRequest(error);
       }
       pending.clear();
-      comerWorker = null;
+      ocrWorker = null;
     };
 
     const stdout = readline.createInterface({ input: child.stdout, crlfDelay: Infinity });
@@ -95,13 +95,13 @@ function startCoMERWorker() {
 
       if (payload.event === "ready") {
         isReady = true;
-        comerWorker = { child, pending, readyState: payload };
-        resolve(comerWorker);
+        ocrWorker = { child, pending, readyState: payload };
+        resolve(ocrWorker);
         return;
       }
 
       if (payload.event === "fatal") {
-        settleFailure(payload.error || "CoMER startup failed.");
+        settleFailure(payload.error || "Pix2Text startup failed.");
         return;
       }
 
@@ -114,7 +114,7 @@ function startCoMERWorker() {
       if (payload.ok) {
         request.resolve(payload);
       } else {
-        request.reject(new Error(payload.error || "CoMER recognition failed."));
+        request.reject(new Error(payload.error || "Pix2Text recognition failed."));
       }
     });
 
@@ -123,22 +123,22 @@ function startCoMERWorker() {
     });
 
     child.once("error", (error) => {
-      settleFailure(`Unable to start CoMER worker: ${error.message}`);
+      settleFailure(`Unable to start Pix2Text worker: ${error.message}`);
     });
 
     child.once("exit", (code, signal) => {
       const stderr = stderrChunks.join("").trim();
-      const reason = stderr || `CoMER worker exited (${signal || code || "unknown"}).`;
+      const reason = stderr || `Pix2Text worker exited (${signal || code || "unknown"}).`;
       settleFailure(reason);
     });
   });
 }
 
-async function ensureCoMERWorker() {
-  if (!comerWorkerPromise) {
-    comerWorkerPromise = startCoMERWorker();
+async function ensureRecognitionWorker() {
+  if (!ocrWorkerPromise) {
+    ocrWorkerPromise = startRecognitionWorker();
   }
-  return comerWorkerPromise;
+  return ocrWorkerPromise;
 }
 
 function getRecognitionCacheKey(imageData) {
@@ -170,29 +170,29 @@ function setCachedRecognition(cacheKey, result) {
   }
 }
 
-ensureCoMERWorker()
+ensureRecognitionWorker()
   .then((worker) => {
-    const checkpoint = worker?.readyState?.checkpoint || "unknown checkpoint";
+    const model = worker?.readyState?.model || "unknown model";
     const device = worker?.readyState?.device || "unknown device";
-    console.log(`CoMER worker ready on ${device} using ${checkpoint}`);
+    console.log(`Pix2Text worker ready on ${device} using ${model}`);
 
-    if (fs.existsSync(COMER_WARMUP_SAMPLE_PATH)) {
-      const warmupImageData = `data:image/bmp;base64,${fs.readFileSync(COMER_WARMUP_SAMPLE_PATH).toString("base64")}`;
-      requestCoMERRecognition(warmupImageData)
+    if (fs.existsSync(OCR_WARMUP_SAMPLE_PATH)) {
+      const warmupImageData = `data:image/bmp;base64,${fs.readFileSync(OCR_WARMUP_SAMPLE_PATH).toString("base64")}`;
+      requestRecognition(warmupImageData)
         .then(() => {
-          console.log("CoMER worker warmup complete.");
+          console.log("Pix2Text worker warmup complete.");
         })
         .catch((error) => {
-          console.error(`CoMER warmup failed: ${error instanceof Error ? error.message : "unknown error"}`);
+          console.error(`Pix2Text warmup failed: ${error instanceof Error ? error.message : "unknown error"}`);
         });
     }
   })
   .catch((error) => {
-    console.error(error instanceof Error ? error.message : "CoMER worker failed to start.");
+    console.error(error instanceof Error ? error.message : "Pix2Text worker failed to start.");
   });
 
-async function requestCoMERRecognition(imageData) {
-  const worker = await ensureCoMERWorker();
+async function requestRecognition(imageData) {
+  const worker = await ensureRecognitionWorker();
 
   return new Promise((resolve, reject) => {
     const id = randomUUID();
@@ -201,14 +201,14 @@ async function requestCoMERRecognition(imageData) {
     worker.child.stdin.write(`${JSON.stringify({ id, imageData })}\n`, (error) => {
       if (!error) return;
       worker.pending.delete(id);
-      reject(new Error(`Unable to send request to CoMER worker: ${error.message}`));
+      reject(new Error(`Unable to send request to Pix2Text worker: ${error.message}`));
     });
   });
 }
 
 process.on("exit", () => {
-  if (comerWorker?.child) {
-    comerWorker.child.kill();
+  if (ocrWorker?.child) {
+    ocrWorker.child.kill();
   }
 });
 
@@ -246,7 +246,7 @@ app.post("/analyze-sketch", async (req, res) => {
           role: "user",
           content: [
             `User message: ${prompt || "(none)"}`,
-            `Recognized math from CoMER: ${typeof recognizedMath === "string" && recognizedMath.trim() ? recognizedMath.trim() : "(none)"}`,
+            `Recognized math from Pix2Text: ${typeof recognizedMath === "string" && recognizedMath.trim() ? recognizedMath.trim() : "(none)"}`,
             `Sketch JSON: ${JSON.stringify(safeElements)}`,
           ].join("\n\n"),
         },
@@ -264,7 +264,7 @@ app.post("/recognize-math", async (req, res) => {
   const { imageData } = req.body || {};
 
   if (typeof imageData !== "string" || !imageData.trim()) {
-    res.json({ latex: "", normalized: "", score: null, model: "CoMER", isReliable: false, issues: ["no_image"] });
+    res.json({ latex: "", normalized: "", score: null, model: "Pix2Text", isReliable: false, issues: ["no_image"] });
     return;
   }
 
@@ -279,13 +279,13 @@ app.post("/recognize-math", async (req, res) => {
       return;
     }
 
-    const result = await requestCoMERRecognition(imageData);
+    const result = await requestRecognition(imageData);
     const payload = {
       latex: typeof result.latex === "string" ? result.latex : "",
       normalized: typeof result.normalized === "string" ? result.normalized : "",
       score: Number.isFinite(result.score) ? result.score : null,
       imageSize: result.imageSize || null,
-      model: "CoMER",
+      model: "Pix2Text",
       device: typeof result.device === "string" ? result.device : null,
       isReliable: result.isReliable === true,
       issues: Array.isArray(result.issues) ? result.issues : [],
@@ -295,8 +295,8 @@ app.post("/recognize-math", async (req, res) => {
     res.json(payload);
   } catch (error) {
     res.status(503).json({
-      error: error instanceof Error ? error.message : "CoMER recognition failed.",
-      model: "CoMER",
+      error: error instanceof Error ? error.message : "Pix2Text recognition failed.",
+      model: "Pix2Text",
     });
   }
 });

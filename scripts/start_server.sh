@@ -27,7 +27,7 @@ if is_port_listening "${SERVER_PORT}"; then
   exit 0
 fi
 
-if [[ -z "${COMER_PYTHON_BIN:-}" ]] && command -v conda >/dev/null 2>&1; then
+if [[ -z "${PIX2TEXT_PYTHON_BIN:-}" && -z "${MATH_OCR_PYTHON_BIN:-}" ]] && command -v conda >/dev/null 2>&1; then
   CONDA_BASE="$(conda info --base 2>/dev/null || true)"
   RESOLVED_PYTHON=""
 
@@ -39,7 +39,7 @@ if [[ -z "${COMER_PYTHON_BIN:-}" ]] && command -v conda >/dev/null 2>&1; then
   fi
 
   if [[ -n "${RESOLVED_PYTHON}" && -x "${RESOLVED_PYTHON}" ]]; then
-    export COMER_PYTHON_BIN="${RESOLVED_PYTHON}"
+    export PIX2TEXT_PYTHON_BIN="${RESOLVED_PYTHON}"
   fi
 fi
 

@@ -103,11 +103,11 @@ function getRecognitionIssueMessage(issues) {
     issues.includes("high_token_repetition") ||
     issues.includes("repeated_phrase")
   ) {
-    return "CoMER produced a repetitive or broken equation for this drawing. Try redrawing the expression with more spacing.";
+    return "Pix2Text produced a repetitive or broken equation for this drawing. Try redrawing the expression with more spacing.";
   }
 
   if (issues.includes("too_many_multiplication_dots")) {
-    return "CoMER over-read repeated multiplication symbols. Remove stray marks and try again.";
+    return "Pix2Text over-read repeated multiplication symbols. Remove stray marks and try again.";
   }
 
   if (issues.includes("no_content")) {
@@ -411,7 +411,7 @@ function App() {
       appendMessage(
         "assistant",
         recognitionError ||
-          "CoMER could not confidently read the handwritten math yet. Try waiting a moment or redrawing the symbols a bit more clearly.",
+          "Pix2Text could not confidently read the handwritten math yet. Try waiting a moment or redrawing the symbols a bit more clearly.",
       );
       return;
     }
@@ -494,14 +494,14 @@ function App() {
         <div className="recognition-card">
           <div className="recognition-title">Live Math Recognition</div>
           <div className="recognition-body">
-            {isRecognizingMath ? "Recognizing current handwriting with CoMER..." : null}
+            {isRecognizingMath ? "Recognizing current handwriting with Pix2Text..." : null}
             {!isRecognizingMath && recognitionError ? (
               <p className="recognition-error">{recognitionError}</p>
             ) : null}
             {!isRecognizingMath && !recognitionError && recognizedMath ? (
               <div className="recognition-result">
                 <div className="recognition-preview">{recognizedMathPreview || recognizedMath}</div>
-                <div className="recognition-raw-label">Raw CoMER Output</div>
+                <div className="recognition-raw-label">Raw Pix2Text Output</div>
                 <code>{recognizedMath}</code>
               </div>
             ) : null}
@@ -529,7 +529,7 @@ function App() {
         <div className="chat-form">
           {recognizedMath ? (
             <div className="chat-context">
-              Chat will include CoMER math context: <code>{recognizedMath}</code>
+              Chat will include Pix2Text math context: <code>{recognizedMath}</code>
             </div>
           ) : null}
           <input
