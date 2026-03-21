@@ -264,6 +264,7 @@ def find_content_bbox(image):
 
 def preprocess_image(image_bytes, image_module):
     import numpy as np
+    import cv2
     from PIL import ImageOps
 
     image = image_module.open(io.BytesIO(image_bytes)).convert("RGBA")
@@ -287,6 +288,20 @@ def preprocess_image(image_bytes, image_module):
         image = image.crop((left, top, right, bottom))
     else:
         return None
+
+    image = ImageOps.autocontrast(image)
+    image_array = np.array(image, dtype=np.uint8)
+    _, binary = cv2.threshold(image_array, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+    # Normalize to black ink on white paper and slightly connect broken strokes.
+    if binary.mean() < 127:
+        binary = 255 - binary
+
+    kernel = np.ones((2, 2), dtype=np.uint8)
+    ink_mask = cv2.bitwise_not(binary)
+    ink_mask = cv2.dilate(ink_mask, kernel, iterations=1)
+    binary = cv2.bitwise_not(ink_mask)
+    image = image_module.fromarray(binary, mode="L")
 
     return resize_to_model_limits(image)
 
