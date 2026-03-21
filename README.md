@@ -70,7 +70,7 @@ Useful environment variables:
 - `HOST`: bind address for the Express server, for example `0.0.0.0`
 - `PORT`: backend and production web port
 - `COMER_PYTHON_BIN`: Python binary with the CoMER dependencies installed
-- `COMER_CHECKPOINT`: optional path to a different checkpoint file
+- `COMER_CHECKPOINT`: optional path to a specific checkpoint file. If omitted, the app automatically picks the checkpoint with the highest `val_ExpRate` from `lightning_logs/version_*/checkpoints/`
 - `COMER_DEVICE`: optional inference device such as `cpu`, `cuda`, or `mps`
 - `VITE_HOST`, `VITE_PORT`, `VITE_BACKEND_URL`: dev-mode overrides for remote Vite usage
 
