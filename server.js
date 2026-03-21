@@ -1,10 +1,11 @@
 import express from "express";
 import OpenAI from "openai";
+import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import readline from "readline";
 import { spawn } from "child_process";
-import { randomUUID } from "crypto";
+import { createHash, randomUUID } from "crypto";
 
 const app = express();
 const HOST = process.env.HOST || "127.0.0.1";
@@ -16,10 +17,33 @@ const DEV_FRONTEND_URL =
   process.env.DEV_FRONTEND_URL || `http://${process.env.VITE_HOST || "127.0.0.1"}:${process.env.VITE_PORT || "5174"}`;
 const PYTHON_BIN = process.env.COMER_PYTHON_BIN || "python3";
 const COMER_WORKER_PATH = path.join(__dirname, "scripts", "comer_worker.py");
+const COMER_WARMUP_SAMPLE_PATH = path.join(__dirname, "example", "UN19_1041_em_595.bmp");
+const RECOGNITION_CACHE_LIMIT = 64;
 let comerWorkerPromise = null;
 let comerWorker = null;
+const recognitionCache = new Map();
 
 app.use(express.json({ limit: "10mb" }));
+app.use((req, res, next) => {
+  res.setHeader(
+    "Content-Security-Policy",
+    [
+      "default-src 'self'",
+      "script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: data: https:",
+      "script-src-elem 'self' 'unsafe-inline' 'unsafe-eval' blob: data: https:",
+      "script-src-attr 'unsafe-inline'",
+      "style-src 'self' 'unsafe-inline'",
+      "img-src 'self' data: blob: https:",
+      "font-src 'self' data:",
+      "connect-src 'self' http: https: ws: wss:",
+      "worker-src 'self' blob:",
+      "frame-ancestors 'self'",
+      "base-uri 'self'",
+      "object-src 'none'",
+    ].join("; "),
+  );
+  next();
+});
 
 if (process.env.NODE_ENV === "production") {
   app.use(express.static(DIST_DIR));
@@ -117,6 +141,56 @@ async function ensureCoMERWorker() {
   return comerWorkerPromise;
 }
 
+function getRecognitionCacheKey(imageData) {
+  return createHash("sha1").update(imageData).digest("hex");
+}
+
+function getCachedRecognition(cacheKey) {
+  if (!recognitionCache.has(cacheKey)) return null;
+
+  const cached = recognitionCache.get(cacheKey);
+  recognitionCache.delete(cacheKey);
+  recognitionCache.set(cacheKey, cached);
+  return cached;
+}
+
+function setCachedRecognition(cacheKey, result) {
+  if (!cacheKey || !result) return;
+
+  if (recognitionCache.has(cacheKey)) {
+    recognitionCache.delete(cacheKey);
+  }
+  recognitionCache.set(cacheKey, result);
+
+  if (recognitionCache.size > RECOGNITION_CACHE_LIMIT) {
+    const oldestKey = recognitionCache.keys().next().value;
+    if (oldestKey) {
+      recognitionCache.delete(oldestKey);
+    }
+  }
+}
+
+ensureCoMERWorker()
+  .then((worker) => {
+    const checkpoint = worker?.readyState?.checkpoint || "unknown checkpoint";
+    const device = worker?.readyState?.device || "unknown device";
+    console.log(`CoMER worker ready on ${device} using ${checkpoint}`);
+
+    if (fs.existsSync(COMER_WARMUP_SAMPLE_PATH)) {
+      const warmupImageData = `data:image/bmp;base64,${fs.readFileSync(COMER_WARMUP_SAMPLE_PATH).toString("base64")}`;
+      requestCoMERRecognition(warmupImageData)
+        .then(() => {
+          console.log("CoMER worker warmup complete.");
+        })
+        .catch((error) => {
+          console.error(`CoMER warmup failed: ${error instanceof Error ? error.message : "unknown error"}`);
+        });
+    }
+  })
+  .catch((error) => {
+    console.error(error instanceof Error ? error.message : "CoMER worker failed to start.");
+  });
+
 async function requestCoMERRecognition(imageData) {
   const worker = await ensureCoMERWorker();
 
@@ -190,20 +264,35 @@ app.post("/recognize-math", async (req, res) => {
   const { imageData } = req.body || {};
 
   if (typeof imageData !== "string" || !imageData.trim()) {
-    res.json({ latex: "", normalized: "", score: null, model: "CoMER" });
+    res.json({ latex: "", normalized: "", score: null, model: "CoMER", isReliable: false, issues: ["no_image"] });
     return;
   }
 
   try {
+    const cacheKey = getRecognitionCacheKey(imageData);
+    const cachedResult = getCachedRecognition(cacheKey);
+    if (cachedResult) {
+      res.json({
+        ...cachedResult,
+        cached: true,
+      });
+      return;
+    }
+
     const result = await requestCoMERRecognition(imageData);
-    res.json({
+    const payload = {
       latex: typeof result.latex === "string" ? result.latex : "",
       normalized: typeof result.normalized === "string" ? result.normalized : "",
       score: Number.isFinite(result.score) ? result.score : null,
       imageSize: result.imageSize || null,
       model: "CoMER",
       device: typeof result.device === "string" ? result.device : null,
-    });
+      isReliable: result.isReliable === true,
+      issues: Array.isArray(result.issues) ? result.issues : [],
+      cached: false,
+    };
+    setCachedRecognition(cacheKey, payload);
+    res.json(payload);
   } catch (error) {
     res.status(503).json({
       error: error instanceof Error ? error.message : "CoMER recognition failed.",

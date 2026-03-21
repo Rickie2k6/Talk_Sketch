@@ -6,6 +6,8 @@ import Whiteboard from "./library/Whiteboard.jsx";
 const RECOGNITION_DEBOUNCE_MS = 450;
 const RECOGNITION_EXPORT_PADDING = 24;
 const RECOGNITION_REQUEST_TIMEOUT_MS = 20000;
+const RECOGNITION_EXPORT_MAX_DIMENSION = 1200;
+const RECOGNITION_EXPORT_MAX_PIXELS = 900000;
 const EXPRESSION_QUESTION_PATTERNS = [
   "math expression",
   "equation",
@@ -91,6 +93,30 @@ function formatRecognizedMathPreview(latex) {
     .trim();
 }
 
+function getRecognitionIssueMessage(issues) {
+  if (!Array.isArray(issues) || issues.length === 0) {
+    return "Math recognition looks unreliable for this drawing. Try writing a bit larger or more clearly.";
+  }
+
+  if (
+    issues.includes("too_many_relations") ||
+    issues.includes("high_token_repetition") ||
+    issues.includes("repeated_phrase")
+  ) {
+    return "CoMER produced a repetitive or broken equation for this drawing. Try redrawing the expression with more spacing.";
+  }
+
+  if (issues.includes("too_many_multiplication_dots")) {
+    return "CoMER over-read repeated multiplication symbols. Remove stray marks and try again.";
+  }
+
+  if (issues.includes("no_content")) {
+    return "No handwritten math was detected on the board.";
+  }
+
+  return "Math recognition looks unreliable for this drawing. Try writing a bit larger or more clearly.";
+}
+
 function blobToDataURL(blob) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -98,6 +124,50 @@ function blobToDataURL(blob) {
     reader.onerror = () => reject(reader.error || new Error("Unable to read exported scene."));
     reader.readAsDataURL(blob);
   });
+}
+
+async function resizeBlobForRecognition(blob) {
+  if (typeof window === "undefined" || typeof createImageBitmap !== "function") {
+    return blob;
+  }
+
+  const imageBitmap = await createImageBitmap(blob);
+  const { width, height } = imageBitmap;
+  const dimensionScale = Math.min(
+    1,
+    RECOGNITION_EXPORT_MAX_DIMENSION / Math.max(width, height),
+  );
+  const pixelScale = Math.min(
+    1,
+    Math.sqrt(RECOGNITION_EXPORT_MAX_PIXELS / Math.max(width * height, 1)),
+  );
+  const scale = Math.min(dimensionScale, pixelScale);
+
+  if (scale >= 1) {
+    imageBitmap.close();
+    return blob;
+  }
+
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(width * scale));
+  canvas.height = Math.max(1, Math.round(height * scale));
+  const context = canvas.getContext("2d");
+
+  if (!context) {
+    imageBitmap.close();
+    return blob;
+  }
+
+  context.fillStyle = "#ffffff";
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  context.drawImage(imageBitmap, 0, 0, canvas.width, canvas.height);
+  imageBitmap.close();
+
+  const resizedBlob = await new Promise((resolve) => {
+    canvas.toBlob((nextBlob) => resolve(nextBlob || blob), "image/png");
+  });
+
+  return resizedBlob;
 }
 
 async function exportSceneImage(excalidrawAPI) {
@@ -119,7 +189,8 @@ async function exportSceneImage(excalidrawAPI) {
     exportPadding: RECOGNITION_EXPORT_PADDING,
   });
 
-  return blobToDataURL(blob);
+  const normalizedBlob = await resizeBlobForRecognition(blob);
+  return blobToDataURL(normalizedBlob);
 }
 
 function App() {
@@ -136,8 +207,10 @@ function App() {
   const [messages, setMessages] = useState([]);
   const recognitionRef = useRef(null);
   const recognizeAbortRef = useRef(null);
+  const recognitionCacheRef = useRef(new Map());
   const lastSceneSignatureRef = useRef("");
   const lastObservedSceneSignatureRef = useRef("");
+  const latestSceneSignatureRef = useRef("");
   const recognitionRequestSerialRef = useRef(0);
 
   const canSend = useMemo(() => Boolean(chatInput.trim()) && !isSending, [chatInput, isSending]);
@@ -157,6 +230,7 @@ function App() {
     }
 
     lastObservedSceneSignatureRef.current = signature;
+    latestSceneSignatureRef.current = signature;
     setSceneElements([...nextElements]);
   };
 
@@ -171,8 +245,16 @@ function App() {
     };
   }, []);
 
-  const recognizeScene = async ({ preserveExistingMath = false } = {}) => {
+  const recognizeScene = async ({ preserveExistingMath = false, signature = "" } = {}) => {
     if (!excalidrawAPI) return "";
+
+    const cacheKey = signature || latestSceneSignatureRef.current;
+    if (cacheKey && recognitionCacheRef.current.has(cacheKey)) {
+      const cachedLatex = recognitionCacheRef.current.get(cacheKey);
+      setRecognizedMath(cachedLatex);
+      setRecognitionError("");
+      return cachedLatex;
+    }
 
     const imageData = await exportSceneImage(excalidrawAPI);
     if (!imageData) {
@@ -210,10 +292,15 @@ function App() {
 
       const data = await response.json();
       const latex = typeof data?.latex === "string" ? data.latex.trim() : "";
+      const isReliable = data?.isReliable === true;
+      const issueMessage = !latex ? getRecognitionIssueMessage(data?.issues) : "";
+      if (cacheKey && latex) {
+        recognitionCacheRef.current.set(cacheKey, latex);
+      }
 
       if (recognitionRequestSerialRef.current === requestSerial) {
         setRecognizedMath(latex);
-        setRecognitionError("");
+        setRecognitionError(!latex && !isReliable ? issueMessage : "");
       }
 
       return latex;
@@ -261,8 +348,16 @@ function App() {
     const signature = activeElements.map((el) => `${el.id}:${el.version}`).join("|");
     if (signature === lastSceneSignatureRef.current) return;
 
+    if (recognitionCacheRef.current.has(signature)) {
+      const cachedLatex = recognitionCacheRef.current.get(signature);
+      setRecognizedMath(cachedLatex);
+      setRecognitionError("");
+      lastSceneSignatureRef.current = signature;
+      return;
+    }
+
     const recognitionTimer = setTimeout(async () => {
-      const latex = await recognizeScene({ preserveExistingMath: false });
+      const latex = await recognizeScene({ preserveExistingMath: false, signature });
       if (latex) {
         lastSceneSignatureRef.current = signature;
       }
@@ -300,7 +395,10 @@ function App() {
 
     let currentRecognizedMath = recognizedMath;
     if (wantsExpressionOnly && elements.some((element) => !element?.isDeleted)) {
-      currentRecognizedMath = await recognizeScene({ preserveExistingMath: true });
+      currentRecognizedMath = await recognizeScene({
+        preserveExistingMath: true,
+        signature: latestSceneSignatureRef.current,
+      });
     }
 
     if (wantsExpressionOnly && currentRecognizedMath) {
