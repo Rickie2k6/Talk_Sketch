@@ -8,7 +8,7 @@ const __dirname = path.dirname(__filename);
 
 export default defineConfig({
   plugins: [react()],
-<<<<<<< HEAD
+
   resolve: {
     alias: {
       "@excalidraw/excalidraw/index.css": path.resolve(
@@ -16,27 +16,32 @@ export default defineConfig({
         "node_modules/@excalidraw/excalidraw/dist/prod/index.css",
       ),
     },
-=======
+  },
+
   define: {
     "process.env": {},
     process: { env: {} },
->>>>>>> 94757020f8a75682e964711248022f60b89ac414
   },
+
   server: {
     host: process.env.VITE_HOST || "127.0.0.1",
     port: Number(process.env.VITE_PORT || 5174),
     strictPort: process.env.VITE_STRICT_PORT !== "false",
     proxy: {
-      "/analyze-sketch": process.env.VITE_BACKEND_URL || "http://127.0.0.1:3001",
-      "/recognize-math": process.env.VITE_BACKEND_URL || "http://127.0.0.1:3001",
+      "/analyze-sketch":
+        process.env.VITE_BACKEND_URL || "http://127.0.0.1:3001",
+      "/recognize-math":
+        process.env.VITE_BACKEND_URL || "http://127.0.0.1:3001",
     },
     middlewareMode: false,
     hmr: { protocol: "http", host: "127.0.0.1", port: 5174 },
   },
+
   build: {
     minify: "terser",
     sourcemap: false,
   },
+
   optimizeDeps: {
     include: ["react", "react-dom", "@excalidraw/excalidraw"],
   },
