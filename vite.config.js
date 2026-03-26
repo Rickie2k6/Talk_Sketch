@@ -30,5 +30,14 @@ export default defineConfig({
       "/analyze-sketch": process.env.VITE_BACKEND_URL || "http://127.0.0.1:3001",
       "/recognize-math": process.env.VITE_BACKEND_URL || "http://127.0.0.1:3001",
     },
+    middlewareMode: false,
+    hmr: { protocol: "http", host: "127.0.0.1", port: 5174 },
+  },
+  build: {
+    minify: "terser",
+    sourcemap: false,
+  },
+  optimizeDeps: {
+    include: ["react", "react-dom", "@excalidraw/excalidraw"],
   },
 });
