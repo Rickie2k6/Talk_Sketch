@@ -1,5 +1,5 @@
 import express from "express";
-import OpenAI from "openai";
+import Anthropic from "@anthropic-ai/sdk";
 import path from "path";
 import { fileURLToPath } from "url";
 import fs from "fs";
@@ -140,8 +140,8 @@ app.post("/analyze-sketch", async (req, res) => {
 app.post("/recognize-math", async (req, res) => {
   const { apiKey, elements } = req.body || {};
 
-  if (typeof apiKey !== "string" || !apiKey.startsWith("sk-")) {
-    res.status(400).json({ error: "Invalid API key." });
+  if (typeof apiKey !== "string" || !apiKey.startsWith("sk-ant-")) {
+    res.status(400).json({ error: "Invalid Claude API key. Must start with 'sk-ant-'." });
     return;
   }
 
@@ -152,37 +152,51 @@ app.post("/recognize-math", async (req, res) => {
 
   const compactElements = compactElementsForRecognition(elements);
   const symbols = await loadSymbolLabels();
-  const symbolHint = symbols.length > 0 ? symbols.slice(0, 800).join(", ") : "";
+  const symbolHint = symbols.length > 0 ? symbols.slice(0, 500).join(", ") : "";
 
   try {
-    const client = new OpenAI({ apiKey });
-    const completion = await client.chat.completions.create({
-      model: "gpt-4o-mini",
+    const client = new Anthropic({ apiKey });
+    
+    const systemPrompt = [
+      "You are an expert handwritten math expression recognizer.",
+      "You analyze Excalidraw stroke elements and convert them to mathematical notation.",
+      "You must ALWAYS respond with valid JSON in this exact format:",
+      '{"latex":"<LaTeX expression>", "normalized":"<plain text representation>", "confidence":<0-1>}',
+      "Where:",
+      "- latex: The recognized expression in LaTeX notation",
+      "- normalized: A plain English description of the expression",
+      "- confidence: A number between 0 and 1 indicating confidence in the recognition",
+      "For invalid or unclear inputs, return empty strings with confidence 0.",
+      "Be precise with LaTeX syntax. Common patterns:",
+      "- Fractions: \\frac{numerator}{denominator}",
+      "- Powers: x^{2} or a^{b}",
+      "- Roots: \\sqrt{x} or \\sqrt[n]{x}",
+      "- Greek letters: \\alpha, \\beta, \\theta, etc.",
+      "- Operators: \\times, \\div, \\pm, \\approx, etc.",
+    ].join("\n");
+
+    const userPrompt = [
+      "Analyze these handwritten Excalidraw stroke elements and recognize the mathematical expression.",
+      symbolHint ? `\nPreferred symbols from dataset: ${symbolHint}` : "",
+      `\nStroke elements (JSON):\n${JSON.stringify(compactElements, null, 2)}`,
+      "\nRespond ONLY with the JSON object, no additional text.",
+    ].join("\n");
+
+    const response = await client.messages.create({
+      model: "claude-3-5-sonnet-20241022",
+      max_tokens: 500,
+      system: systemPrompt,
       messages: [
         {
-          role: "system",
-          content: [
-            "You are a handwriting math recognizer.",
-            "Given Excalidraw stroke elements, return the most likely LaTeX equation/expression.",
-            "Return strict JSON only:",
-            '{"latex":"", "normalized":"", "confidence":0}',
-            "confidence must be a number between 0 and 1.",
-          ].join("\n"),
-        },
-        {
           role: "user",
-          content: [
-            symbolHint
-              ? `These symbol labels are from the local MathWriting dataset and should be preferred: ${symbolHint}`
-              : "No local symbol hints available.",
-            `Stroke elements JSON: ${JSON.stringify(compactElements)}`,
-          ].join("\n\n"),
+          content: userPrompt,
         },
       ],
     });
 
-    const text = completion.choices?.[0]?.message?.content || "";
+    const text = response.content?.[0]?.type === "text" ? response.content[0].text : "";
     const parsed = sanitizeModelJson(text);
+    
     if (!parsed) {
       res.json({
         latex: "",
@@ -199,8 +213,9 @@ app.post("/recognize-math", async (req, res) => {
       confidence: Number.isFinite(parsed.confidence) ? Math.max(0, Math.min(1, parsed.confidence)) : 0,
       symbolCount: symbols.length,
     });
-  } catch {
-    res.status(400).json({ error: "Math recognition failed." });
+  } catch (error) {
+    console.error("Math recognition error:", error);
+    res.status(400).json({ error: "Math recognition failed: " + (error?.message || "Unknown error") });
   }
 });
 

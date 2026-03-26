@@ -190,6 +190,67 @@ body {
   gap: 8px;
 }
 
+.recognize-btn {
+  width: 100%;
+  border: 1px solid #c4cfeb;
+  border-radius: 10px;
+  padding: 10px 12px;
+  font: inherit;
+  font-weight: 600;
+  background: #4f75ff;
+  color: #fff;
+  border-color: #4f75ff;
+  cursor: pointer;
+  margin-bottom: 8px;
+}
+
+.recognize-btn:hover:not(:disabled) {
+  background: #3859d9;
+  border-color: #3859d9;
+}
+
+.recognize-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.math-results {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.result-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+}
+
+.result-label {
+  font-weight: 600;
+  color: #627093;
+}
+
+.result-item code {
+  display: block;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: #f5f7fd;
+  border: 1px solid #e1e6f4;
+  border-radius: 8px;
+  padding: 8px;
+  font-size: 11px;
+}
+
+.result-item span:last-child {
+  padding: 4px 8px;
+  background: #e8eef8;
+  border-radius: 6px;
+  color: #1f2a44;
+}
+
 .hint {
   margin: 0;
   font-size: 12px;

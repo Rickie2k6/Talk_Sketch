@@ -11,6 +11,7 @@
     "start:server": "node server.js"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.24.3",
     "@excalidraw/excalidraw": "^0.18.0",
     "@vitejs/plugin-react": "^5.1.4",
     "express": "^4.21.2",
