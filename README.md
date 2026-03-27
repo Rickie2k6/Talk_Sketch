@@ -1,11 +1,11 @@
 # Talk Sketch
 
-Talk Sketch is a whiteboard-style math assistant built with React, Excalidraw, Express, OpenAI, and Pix2Text.
+Talk Sketch is a whiteboard-style math assistant built with React, Excalidraw, Express, OpenAI, and CoMER.
 
 It lets you:
 
 - draw handwritten math on the board
-- recognize expressions with Pix2Text formula OCR
+- recognize expressions with CoMER (v0) formula recognition
 - ask the chat assistant questions about the current sketch
 - use speech input for the chat box
 
@@ -13,15 +13,16 @@ It lets you:
 
 - Frontend: React + Vite + Excalidraw
 - Backend: Express
-- Math recognition: Pix2Text running in a Python worker
+- Math recognition: CoMER (v0) PyTorch Lightning model running in a Python worker
 - Chat: OpenAI API
 
 ## Project Layout
 
 ```text
 src/                  React app
-scripts/              helper scripts and the Pix2Text worker
+scripts/              helper scripts and the CoMER worker
 server.js             Express API for chat and recognition
+CoMER/                CoMER model checkpoint and PyTorch Lightning code
 example/              sample handwritten math assets
 ```
 
@@ -64,7 +65,7 @@ For a Linux server such as Wukong, use the production flow so Express serves the
 ```bash
 npm install
 npm run build
-HOST=0.0.0.0 PORT=3001 PIX2TEXT_PYTHON_BIN=/path/to/python npm run serve:prod
+HOST=0.0.0.0 PORT=3001 COMER_PYTHON_BIN=/path/to/python npm run serve:prod
 ```
 
 Then open `http://<server-hostname>:3001`.
@@ -73,21 +74,19 @@ Useful environment variables:
 
 - `HOST`: bind address for the Express server, for example `0.0.0.0`
 - `PORT`: backend and production web port
-- `PIX2TEXT_PYTHON_BIN`: Python binary with the Pix2Text dependencies installed
-- `PIX2TEXT_MODEL_NAME`: formula model name, default `mfr-1.5`
-- `PIX2TEXT_MODEL_BACKEND`: model backend, default `onnx`
-- `PIX2TEXT_MODEL_DIR`: optional local model directory
-- `PIX2TEXT_ROOT`: optional root directory for downloaded Pix2Text models
-- `PIX2TEXT_DEVICE`: optional inference device such as `cpu`, `cuda`, or `mps`
-- `PIX2TEXT_PROVIDER`: optional ONNX Runtime provider such as `CPUExecutionProvider` or `CUDAExecutionProvider`
-- `PIX2TEXT_REC_CONFIG`: optional JSON generation config passed to Pix2Text
+- `COMER_PYTHON_BIN`: Python binary with the CoMER dependencies installed, default `python3`
+- `COMER_MODEL_PATH`: path to CoMER model checkpoint, default `CoMER/lightning_logs/version_0/checkpoints/epoch=151-step=57151-val_ExpRate=0.6365.ckpt`
+- `COMER_DEVICE`: inference device such as `cpu`, `cuda`, or `mps`, default `cpu`
+- `NODE_ENV`: set to `production` for production mode, `development` for dev mode
 - `VITE_HOST`, `VITE_PORT`, `VITE_BACKEND_URL`: dev-mode overrides for remote Vite usage
 
 ## Notes
 
 - `npm run start:server` automatically resolves the `talk_sketch` conda environment if it exists.
-- The first recognition request is slower because Pix2Text may need to initialize and download model files.
+- The first recognition request is slower because the CoMER model needs to load (~2-5 seconds on first startup).
+- Subsequent recognition requests are faster (~500ms-1s) and can be even faster if cached (~10ms).
 - Chat responses still require an OpenAI API key in the app UI.
+- For GPU acceleration, install PyTorch with CUDA support and set `COMER_DEVICE=cuda`.
 
 ## Useful Commands
 
