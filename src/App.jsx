@@ -1,7 +1,9 @@
 import { exportToBlob } from "@excalidraw/excalidraw";
 import { useEffect, useMemo, useRef, useState } from "react";
 import "./App.css";
+import "../ai_chatbox/history.css";
 import Whiteboard from "./library/Whiteboard.jsx";
+import { addMessageToHistory, getHistory, clearHistory, downloadHistoryAsFile } from "../ai_chatbox/history.js";
 
 const RECOGNITION_DEBOUNCE_MS = 450;
 const RECOGNITION_EXPORT_PADDING = 24;
@@ -205,6 +207,8 @@ function App() {
   const [recognizedMath, setRecognizedMath] = useState("");
   const [recognitionError, setRecognitionError] = useState("");
   const [messages, setMessages] = useState([]);
+  const [showHistory, setShowHistory] = useState(false);
+  const [chatHistory, setChatHistory] = useState([]);
   const recognitionRef = useRef(null);
   const recognizeAbortRef = useRef(null);
   const recognitionCacheRef = useRef(new Map());
@@ -368,6 +372,7 @@ function App() {
 
   const appendMessage = (role, text) => {
     setMessages((prev) => [...prev, { id: `${Date.now()}-${Math.random()}`, role, text }]);
+    addMessageToHistory(role, text);
   };
 
   const connectApiKey = () => {
@@ -477,6 +482,24 @@ function App() {
     setChatInput((prev) => (prev.trim() ? `${prev.trim()} ${recognizedMath}` : recognizedMath));
   };
 
+  const handleViewHistory = () => {
+    const history = getHistory();
+    setChatHistory(history);
+    setShowHistory(true);
+  };
+
+  const handleDownloadHistory = () => {
+    downloadHistoryAsFile();
+  };
+
+  const handleClearHistory = () => {
+    if (confirm("Are you sure you want to clear all chat history? This action cannot be undone.")) {
+      clearHistory();
+      setChatHistory([]);
+      setShowHistory(false);
+    }
+  };
+
   return (
     <div className="app-shell">
       <div className="board-area">
@@ -548,6 +571,9 @@ function App() {
           <button className="send-btn" type="button" onClick={sendMessage} disabled={!canSend}>
             Send
           </button>
+          <button className="history-btn" type="button" onClick={handleViewHistory}>
+            📋 History
+          </button>
         </div>
 
         <div className="api-section">
@@ -577,6 +603,44 @@ function App() {
         >
           {isRecording ? "Stop Recording" : "Start Recording"}
         </button>
+
+        {showHistory && (
+          <div className="chat-history-panel">
+            <div className="history-header">
+              <h3>Chat History ({chatHistory.length} messages)</h3>
+              <button className="close-btn" onClick={() => setShowHistory(false)}>
+                ×
+              </button>
+            </div>
+            <div className="history-container">
+              {chatHistory.length === 0 ? (
+                <p className="empty-message">No chat history yet</p>
+              ) : (
+                chatHistory.map((msg) => (
+                  <div key={msg.id} className={`history-item history-item-${msg.role}`}>
+                    <div className="history-item-header">
+                      <span className="history-role">
+                        {msg.role === "user" ? "You" : "AI Coach"}
+                      </span>
+                      <span className="history-time">
+                        {new Date(msg.timestamp).toLocaleString()}
+                      </span>
+                    </div>
+                    <div className="history-item-text">{msg.text}</div>
+                  </div>
+                ))
+              )}
+            </div>
+            <div className="history-footer">
+              <button className="history-btn" onClick={handleDownloadHistory}>
+                Download CSV
+              </button>
+              <button className="history-btn danger" onClick={handleClearHistory}>
+                Clear History
+              </button>
+            </div>
+          </div>
+        )}
       </aside>
     </div>
   );

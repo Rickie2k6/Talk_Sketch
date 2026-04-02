@@ -1,0 +1,176 @@
+/* Chat History Panel Styles */
+
+.chat-history-panel {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 90%;
+  max-width: 600px;
+  max-height: 80vh;
+  background: white;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+  z-index: 10000;
+  display: flex;
+  flex-direction: column;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen,
+    Ubuntu, Cantarell, sans-serif;
+}
+
+.history-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px;
+  border-bottom: 1px solid #eee;
+  background: #f9f9f9;
+}
+
+.history-header h3 {
+  margin: 0;
+  font-size: 18px;
+  color: #333;
+}
+
+.close-btn {
+  background: none;
+  border: none;
+  font-size: 24px;
+  cursor: pointer;
+  color: #666;
+  padding: 0;
+  width: 30px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+}
+
+.close-btn:hover {
+  background: #eee;
+}
+
+.history-container {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px;
+}
+
+.history-item {
+  padding: 12px;
+  margin-bottom: 12px;
+  border-radius: 6px;
+  border-left: 4px solid #ddd;
+}
+
+.history-item-user {
+  background: #e3f2fd;
+  border-left-color: #1976d2;
+}
+
+.history-item-assistant {
+  background: #f5f5f5;
+  border-left-color: #666;
+}
+
+.history-item-header {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  color: #666;
+  margin-bottom: 6px;
+}
+
+.history-role {
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.history-time {
+  font-size: 10px;
+}
+
+.history-item-text {
+  font-size: 14px;
+  color: #333;
+  line-height: 1.4;
+  word-wrap: break-word;
+  white-space: pre-wrap;
+}
+
+.history-footer {
+  display: flex;
+  gap: 8px;
+  padding: 12px;
+  border-top: 1px solid #eee;
+  background: #f9f9f9;
+  justify-content: flex-end;
+}
+
+.history-btn {
+  padding: 8px 16px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  background: white;
+  cursor: pointer;
+  font-size: 14px;
+  transition: all 0.2s;
+}
+
+.history-btn:hover {
+  background: #f0f0f0;
+  border-color: #999;
+}
+
+.history-btn.danger {
+  color: #d32f2f;
+  border-color: #d32f2f;
+}
+
+.history-btn.danger:hover {
+  background: #ffebee;
+  border-color: #c62828;
+}
+
+.empty-message {
+  text-align: center;
+  color: #999;
+  padding: 40px 20px;
+  font-size: 16px;
+}
+
+/* View History Button */
+#viewHistoryBtn {
+  padding: 8px 12px;
+  margin-left: 8px;
+  background: #f0f0f0;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 14px;
+  transition: all 0.2s;
+}
+
+#viewHistoryBtn:hover {
+  background: #e0e0e0;
+  border-color: #999;
+}
+
+/* Responsive */
+@media (max-width: 600px) {
+  .chat-history-panel {
+    width: 95%;
+    max-height: 90vh;
+  }
+
+  .history-footer {
+    flex-direction: column;
+  }
+
+  .history-btn {
+    width: 100%;
+  }
+}

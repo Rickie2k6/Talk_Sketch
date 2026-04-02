@@ -9,15 +9,18 @@
 body {
   margin: 0;
   background: #eef1f7;
+  overflow-x: hidden;
 }
 
 .app-shell {
   height: 100vh;
-  width: 100vw;
+  width: 100%;
   display: grid;
-  grid-template-columns: 1fr 340px;
+  grid-template-columns: 1fr;
+  grid-template-rows: 1fr auto;
   gap: 12px;
   padding: 12px;
+  overflow: hidden;
 }
 
 .board-area {
@@ -34,8 +37,11 @@ body {
   background: linear-gradient(180deg, #f9fbff 0%, #f4f7ff 100%);
   padding: 14px;
   display: grid;
-  grid-template-rows: auto auto minmax(240px, 1fr) auto auto auto;
+  grid-template-rows: auto auto minmax(100px, 1fr) auto auto auto;
   gap: 12px;
+  max-height: 280px;
+  overflow-y: auto;
+  min-width: 0;
 }
 
 .panel-header {
@@ -120,6 +126,22 @@ body {
   background: #2f5bff;
   color: #fff;
   border-color: #2f5bff;
+}
+
+.history-btn {
+  border: 1px solid #c4cfeb;
+  border-radius: 10px;
+  padding: 10px 12px;
+  font: inherit;
+  font-weight: 600;
+  background: #fff;
+  cursor: pointer;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.history-btn:hover {
+  background: #f0f0f0;
 }
 
 .record-btn.active {
@@ -222,7 +244,7 @@ body {
 
 .chat-form {
   display: grid;
-  grid-template-columns: 1fr auto;
+  grid-template-columns: 1fr auto auto;
   gap: 8px;
 }
 
@@ -263,5 +285,21 @@ body {
   .app-shell {
     grid-template-columns: 1fr;
     grid-template-rows: 55vh 1fr;
+  }
+
+  .side-panel {
+    max-height: none;
+  }
+}
+
+@media (min-width: 1200px) {
+  .app-shell {
+    grid-template-columns: 1fr 380px;
+    grid-template-rows: 1fr;
+  }
+
+  .side-panel {
+    max-height: none;
+    overflow-y: auto;
   }
 }
