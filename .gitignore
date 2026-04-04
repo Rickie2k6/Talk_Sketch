@@ -126,6 +126,7 @@ venv.bak/
 .DS_Store
 node_modules/
 dist/
+backend/.backend-port
 Pix2Text/
 
 # seed project

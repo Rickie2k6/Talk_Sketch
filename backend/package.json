@@ -1,0 +1,17 @@
+{
+  "name": "talk-sketch-backend",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "NODE_ENV=development bash ./scripts/start_server.sh",
+    "start": "NODE_ENV=production HOST=${HOST:-0.0.0.0} PORT=${PORT:-8080} bash ./scripts/start_server.sh"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "openai": "^5.19.1",
+    "socket.io": "^4.7.2",
+    "uuid": "^9.0.1",
+    "ws": "^8.20.0"
+  }
+}

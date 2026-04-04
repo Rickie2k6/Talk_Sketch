@@ -1,25 +1,11 @@
 {
-  "name": "talk-sketch",
+  "name": "talk-sketch-workspace",
   "version": "1.0.0",
   "private": true,
-  "type": "module",
   "scripts": {
-    "start": "bash ./scripts/dev_server.sh",
-    "dev": "bash ./scripts/dev_server.sh",
-    "build": "vite build",
-    "clean": "rm -rf dist",
-    "preview": "vite preview",
-    "start:server": "bash ./scripts/start_server.sh",
-    "serve:prod": "NODE_ENV=production HOST=${HOST:-0.0.0.0} PORT=${PORT:-3001} bash ./scripts/start_server.sh"
-  },
-  "dependencies": {
-    "@excalidraw/excalidraw": "^0.17.6",
-    "@vitejs/plugin-react": "^5.1.4",
-    "express": "^4.21.2",
-    "openai": "^5.19.1",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "vite": "^7.3.1",
-    "ws": "^8.20.0"
+    "dev:frontend": "npm --prefix frontend run dev",
+    "dev:backend": "npm --prefix backend run dev",
+    "build:frontend": "npm --prefix frontend run build",
+    "start:backend": "npm --prefix backend run start"
   }
 }

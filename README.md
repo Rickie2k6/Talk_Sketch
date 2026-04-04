@@ -1,99 +1,101 @@
 # Talk Sketch
 
-Talk Sketch is a whiteboard-style math assistant built with React, Excalidraw, Express, OpenAI, and CoMER.
+Talk Sketch is a whiteboard-style math assistant with a React + Vite frontend and a Node + Express backend. In development, the frontend and backend run separately. In production, Express serves the built frontend and the API from one deployment.
 
-It lets you:
-
-- draw handwritten math on the board
-- recognize expressions with CoMER (v0) formula recognition
-- ask the chat assistant questions about the current sketch
-- use speech input for the chat box
-
-## Stack
-
-- Frontend: React + Vite + Excalidraw
-- Backend: Express
-- Math recognition: CoMER (v0) PyTorch Lightning model running in a Python worker
-- Chat: OpenAI API
-
-## Project Layout
+## Structure
 
 ```text
-src/                  React app
-scripts/              helper scripts and the CoMER worker
-server.js             Express API for chat and recognition
-CoMER/                CoMER model checkpoint and PyTorch Lightning code
-example/              sample handwritten math assets
+frontend/             Vite + React app
+backend/              Express API, Python workers, CoMER assets
+README.md             repo-level setup and run guide
 ```
 
 ## Install
 
-JavaScript dependencies:
+Install JavaScript dependencies:
 
 ```bash
-npm install
+npm install --prefix frontend
+npm install --prefix backend
 ```
 
-Python dependencies:
+Install Python dependencies for the backend worker:
 
 ```bash
-pip install -r requirements.txt
+pip install -r backend/requirements.txt
 ```
 
-## Run In Dev
+## Development
 
-Open two terminals from the project root.
+Run the backend and frontend in separate terminals from the repo root.
 
-Terminal 1:
+Terminal 1, backend:
 
 ```bash
-npm run start:server
+npm run dev:backend
 ```
 
-Terminal 2:
+- The backend binds to `0.0.0.0`.
+- It uses port `8080` by default.
+- If `8080` is busy and you did not set `PORT`, the startup script automatically chooses the next free port in `8080-8900` and writes it to `backend/.backend-port`.
+
+Terminal 2, frontend:
 
 ```bash
-npm run dev
+npm run dev:frontend
 ```
 
-Then open `http://127.0.0.1:5174`.
+- The frontend uses Vite's normal dev port behavior.
+- By default it starts on `5173`.
+- If that port is busy, Vite chooses another open dev port automatically.
+- The Vite proxy reads `backend/.backend-port`, so start the backend first.
 
-## Deploy On A Remote Server
+Open the frontend URL shown by Vite in the terminal.
 
-For a Linux server such as Wukong, use the production flow so Express serves the built frontend and API from one port.
+## Production
+
+Build the frontend:
 
 ```bash
-npm install
-npm run build
-HOST=0.0.0.0 PORT=3001 COMER_PYTHON_BIN=/path/to/python npm run serve:prod
+npm run build:frontend
 ```
 
-Then open `http://<server-hostname>:3001`.
+Start the production server:
 
-Useful environment variables:
+```bash
+npm run start:backend
+```
 
-- `HOST`: bind address for the Express server, for example `0.0.0.0`
-- `PORT`: backend and production web port
-- `COMER_PYTHON_BIN`: Python binary with the CoMER dependencies installed, default `python3`
-- `COMER_MODEL_PATH`: path to CoMER model checkpoint, default `CoMER/lightning_logs/version_0/checkpoints/epoch=151-step=57151-val_ExpRate=0.6365.ckpt`
-- `COMER_DEVICE`: inference device such as `cpu`, `cuda`, or `mps`, default `cpu`
-- `NODE_ENV`: set to `production` for production mode, `development` for dev mode
-- `VITE_HOST`, `VITE_PORT`, `VITE_BACKEND_URL`: dev-mode overrides for remote Vite usage
+Or with an explicit allowed server port:
+
+```bash
+HOST=0.0.0.0 PORT=8080 npm run start:backend
+```
+
+Then open:
+
+```text
+http://<server-hostname>:8080
+```
+
+Express serves the built frontend from `frontend/dist` and keeps the existing API routes on the same server.
+
+## Environment Variables
+
+Frontend variables are documented in [frontend/.env.example](/Users/cuonghn/Desktop/Talk_Sketch/Talk_Sketch/frontend/.env.example).
+
+Backend variables are documented in [backend/.env.example](/Users/cuonghn/Desktop/Talk_Sketch/Talk_Sketch/backend/.env.example).
+
+Important backend variables:
+
+- `HOST`: defaults to `0.0.0.0`
+- `PORT`: must be between `8080` and `8900`, defaults to `8080`
+- `COMER_PYTHON_BIN`: Python interpreter for the recognition worker
+- `COMER_MODEL_PATH`: optional custom CoMER checkpoint path
+- `COMER_DEVICE`: inference device such as `cpu`, `cuda`, or `mps`
 
 ## Notes
 
-- `npm run start:server` automatically resolves the `talk_sketch` conda environment if it exists.
-- The first recognition request is slower because the CoMER model needs to load (~2-5 seconds on first startup).
-- Subsequent recognition requests are faster (~500ms-1s) and can be even faster if cached (~10ms).
+- The frontend keeps using relative API paths such as `/recognize-math` and `/analyze-sketch`; the Vite proxy handles development routing.
+- The backend still warms up the CoMER worker on startup.
 - Chat responses still require an OpenAI API key in the app UI.
-- For GPU acceleration, install PyTorch with CUDA support and set `COMER_DEVICE=cuda`.
-
-## Useful Commands
-
-```bash
-npm run dev
-npm run build
-npm run clean
-npm run start:server
-npm run serve:prod
-```

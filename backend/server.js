@@ -6,15 +6,19 @@ import { fileURLToPath } from "url";
 import readline from "readline";
 import { spawn } from "child_process";
 import { createHash, randomUUID } from "crypto";
+import { createServer } from "http";
+import CollaborationServer from "./server/collaborationServer.js";
 
 const app = express();
-const HOST = process.env.HOST || "127.0.0.1";
-const PORT = process.env.PORT || 3001;
+const MIN_PORT = 8080;
+const MAX_PORT = 8900;
+const HOST = process.env.HOST || "0.0.0.0";
+const PORT = Number(process.env.PORT || 8080);
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const DIST_DIR = path.join(__dirname, "dist");
+const DIST_DIR = path.resolve(__dirname, "../frontend/dist");
 const DEV_FRONTEND_URL =
-  process.env.DEV_FRONTEND_URL || `http://${process.env.VITE_HOST || "127.0.0.1"}:${process.env.VITE_PORT || "5174"}`;
+  process.env.DEV_FRONTEND_URL || `http://${process.env.VITE_HOST || "127.0.0.1"}:${process.env.VITE_PORT || "5173"}`;
 const PYTHON_BIN = process.env.COMER_PYTHON_BIN || process.env.PIX2TEXT_PYTHON_BIN || process.env.MATH_OCR_PYTHON_BIN || "python3";
 const OCR_WORKER_PATH = path.join(__dirname, "scripts", "comer_worker.py");
 const OCR_WARMUP_SAMPLE_PATH = path.join(__dirname, "example", "UN19_1041_em_595.bmp");
@@ -22,6 +26,10 @@ const RECOGNITION_CACHE_LIMIT = 64;
 let ocrWorkerPromise = null;
 let ocrWorker = null;
 const recognitionCache = new Map();
+
+if (!Number.isInteger(PORT) || PORT < MIN_PORT || PORT > MAX_PORT) {
+  throw new Error(`PORT must be an integer between ${MIN_PORT} and ${MAX_PORT}. Received: ${process.env.PORT || PORT}`);
+}
 
 app.use(express.json({ limit: "10mb" }));
 app.use((req, res, next) => {
@@ -310,6 +318,37 @@ if (process.env.NODE_ENV === "production") {
   });
 }
 
-app.listen(PORT, HOST, () => {
+// Initialize Collaboration Server with HTTP server
+const httpServer = createServer(app);
+const collaborationServer = new CollaborationServer(httpServer);
+
+// Add history API endpoint
+app.get("/history", (_req, res) => {
+  const history = collaborationServer.getHistory();
+  res.json({
+    expressions: history,
+    count: history.length,
+    timestamp: Date.now(),
+  });
+});
+
+// Add active users endpoint
+app.get("/users/active", (_req, res) => {
+  const users = collaborationServer.getActiveUsers();
+  res.json({
+    users,
+    count: users.length,
+    timestamp: Date.now(),
+  });
+});
+
+// Clear history endpoint (optional)
+app.post("/history/clear", (_req, res) => {
+  collaborationServer.clearHistory();
+  res.json({ message: "History cleared", timestamp: Date.now() });
+});
+
+httpServer.listen(PORT, HOST, () => {
   console.log(`Talk Sketch backend listening on http://${HOST}:${PORT}`);
+  console.log(`WebSocket collaboration server active`);
 });
