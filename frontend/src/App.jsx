@@ -1,4 +1,4 @@
-import { exportToBlob } from "@excalidraw/excalidraw";
+import { exportToBlob, exportToCanvas } from "@excalidraw/excalidraw";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { io } from "socket.io-client";
 import { v4 as uuidv4 } from "uuid";
@@ -16,6 +16,8 @@ const RECOGNITION_EXPORT_MAX_DIMENSION = 1200;
 const RECOGNITION_EXPORT_MAX_PIXELS = 900000;
 const LOCAL_EXPRESSION_IDLE_MS = 2000;
 const EXPRESSION_NOTICE_DURATION_MS = 2800;
+const SHARED_STROKE_RENDER_COLOR = "#000000";
+const EXPRESSION_PREVIEW_BACKGROUND = "#ffffff";
 const EXPRESSION_QUESTION_PATTERNS = [
   "math expression",
   "equation",
@@ -111,11 +113,11 @@ function getRecognitionIssueMessage(issues) {
     issues.includes("high_token_repetition") ||
     issues.includes("repeated_phrase")
   ) {
-    return "GPT-4o produced a repetitive or broken equation for this drawing. Try redrawing the expression with more spacing.";
+    return "GPT-5.4 produced a repetitive or broken equation for this drawing. Try redrawing the expression with more spacing.";
   }
 
   if (issues.includes("too_many_multiplication_dots")) {
-    return "GPT-4o over-read repeated multiplication symbols. Remove stray marks and try again.";
+    return "GPT-5.4 over-read repeated multiplication symbols. Remove stray marks and try again.";
   }
 
   if (issues.includes("no_content")) {
@@ -201,6 +203,32 @@ async function exportSceneImage(excalidrawAPI) {
   return blobToDataURL(normalizedBlob);
 }
 
+function getSerializableExpressionElements(elements) {
+  return (Array.isArray(elements) ? elements : [])
+    .filter((element) => element && !element.isDeleted)
+    .map((element) => JSON.parse(JSON.stringify(element)));
+}
+
+async function renderExpressionPreview(elements, files = {}) {
+  const safeElements = getSerializableExpressionElements(elements);
+  if (safeElements.length === 0) {
+    return "";
+  }
+
+  const canvas = await exportToCanvas({
+    elements: safeElements,
+    appState: {
+      exportBackground: true,
+      exportWithDarkMode: false,
+      viewBackgroundColor: EXPRESSION_PREVIEW_BACKGROUND,
+    },
+    files,
+    maxWidthOrHeight: 640,
+  });
+
+  return canvas.toDataURL("image/png");
+}
+
 function isStrokeElement(element) {
   return Boolean(element) && !element.isDeleted && Array.isArray(element.points) && element.points.length > 1;
 }
@@ -237,9 +265,10 @@ function createStrokeElementFromPayload(stroke) {
         Number.isFinite(point?.y) ? point.y : 0,
       ]);
     }
-    if (stroke.color) {
-      element.strokeColor = stroke.color;
-    }
+    element.strokeColor = SHARED_STROKE_RENDER_COLOR;
+    element.roughness = 0;
+    element.strokeStyle = "solid";
+    element.opacity = 100;
     if (Number.isFinite(stroke.version)) {
       element.version = stroke.version;
     }
@@ -308,11 +337,62 @@ function expressionCreatorLabel(expression, currentUserId) {
   return `User ${shortId}`;
 }
 
+function getExpressionUserIds(expression) {
+  const userIds = new Set();
+
+  if (typeof expression?.userId === "string" && expression.userId.trim()) {
+    userIds.add(expression.userId.trim());
+  }
+
+  if (Array.isArray(expression?.strokes)) {
+    expression.strokes.forEach((stroke) => {
+      if (typeof stroke?.userId === "string" && stroke.userId.trim()) {
+        userIds.add(stroke.userId.trim());
+      }
+    });
+  }
+
+  return Array.from(userIds);
+}
+
 function SharedExpressionPreview({ expression, currentUserId, highlighted = false }) {
-  const strokes = Array.isArray(expression?.strokes) ? expression.strokes : [];
-  const bounds = getExpressionBounds(strokes);
-  const viewBox = `${bounds.minX - 8} ${bounds.minY - 8} ${bounds.width + 16} ${bounds.height + 16}`;
   const creatorLabel = expressionCreatorLabel(expression, currentUserId);
+  const [previewUrl, setPreviewUrl] = useState(expression?.previewUrl || "");
+
+  useEffect(() => {
+    let isCancelled = false;
+    const nextPreviewUrl = typeof expression?.previewUrl === "string" ? expression.previewUrl : "";
+
+    if (nextPreviewUrl) {
+      setPreviewUrl(nextPreviewUrl);
+      return () => {
+        isCancelled = true;
+      };
+    }
+
+    if (!Array.isArray(expression?.elements) || expression.elements.length === 0) {
+      setPreviewUrl("");
+      return () => {
+        isCancelled = true;
+      };
+    }
+
+    renderExpressionPreview(expression.elements)
+      .then((dataUrl) => {
+        if (!isCancelled) {
+          setPreviewUrl(dataUrl);
+        }
+      })
+      .catch(() => {
+        if (!isCancelled) {
+          setPreviewUrl("");
+        }
+      });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [expression]);
 
   return (
     <div className={`shared-expression-card ${highlighted ? "highlighted" : ""}`}>
@@ -321,33 +401,14 @@ function SharedExpressionPreview({ expression, currentUserId, highlighted = fals
         <span>{creatorLabel}</span>
         <span>{new Date(expression?.timestamp || Date.now()).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</span>
       </div>
-      <svg className="shared-expression-preview" viewBox={viewBox} preserveAspectRatio="xMidYMid meet">
-        {strokes.map((stroke) => {
-          const points = Array.isArray(stroke?.points)
-            ? stroke.points.map((point) => [
-              (Number.isFinite(stroke?.x) ? stroke.x : 0) + (Number.isFinite(point?.[0]) ? point[0] : 0),
-              (Number.isFinite(stroke?.y) ? stroke.y : 0) + (Number.isFinite(point?.y) ? point.y : 0),
-            ])
-            : [];
-
-          if (points.length < 2) {
-            return null;
-          }
-
-          return (
-            <polyline
-              key={stroke.strokeId}
-              fill="none"
-              stroke={expression?.color || stroke?.color || "#243355"}
-              strokeWidth="2.4"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              points={points.map(([x, y]) => `${x},${y}`).join(" ")}
-            />
-          );
-        })}
-      </svg>
-      <div className="shared-expression-footer">{strokes.length} stroke(s)</div>
+      {previewUrl ? (
+        <img className="shared-expression-preview" src={previewUrl} alt="Shared handwritten math sketch preview" />
+      ) : (
+        <div className="shared-expression-preview" />
+      )}
+      <div className="shared-expression-footer">
+        {Array.isArray(expression?.elements) ? expression.elements.length : 0} element(s)
+      </div>
     </div>
   );
 }
@@ -416,11 +477,13 @@ function App() {
     }
 
     setHistoryItems((prev) => {
-      if (prev.some((entry) => entry.id === item.id)) {
-        return prev;
-      }
+      const existingIndex = prev.findIndex((entry) => entry.id === item.id);
+      const nextItems =
+        existingIndex === -1
+          ? [...prev, item]
+          : prev.map((entry, index) => (index === existingIndex ? item : entry));
 
-      return [...prev, item].sort((left, right) => {
+      return nextItems.sort((left, right) => {
         if (left.timestamp !== right.timestamp) {
           return left.timestamp - right.timestamp;
         }
@@ -453,6 +516,19 @@ function App() {
     });
   };
 
+  const removeSharedStrokesByIds = (strokeIds) => {
+    if (!Array.isArray(strokeIds) || strokeIds.length === 0) {
+      return;
+    }
+
+    const idsToRemove = new Set(strokeIds.filter(Boolean));
+    if (idsToRemove.size === 0) {
+      return;
+    }
+
+    setSharedStrokes((prev) => prev.filter((stroke) => !idsToRemove.has(stroke.strokeId)));
+  };
+
   const appendSharedExpression = (expression, { notify = false } = {}) => {
     if (!expression?.expressionId) {
       return;
@@ -478,25 +554,73 @@ function App() {
     }
   };
 
-  const flushPendingExpression = () => {
+  const recognizeSharedExpression = async (expression) => {
+    const previewUrl = typeof expression?.previewUrl === "string" ? expression.previewUrl.trim() : "";
+    if (!expression?.expressionId || !previewUrl) {
+      return;
+    }
+
+    try {
+      const response = await fetch("/recognize-math", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          image: previewUrl,
+          apiKey,
+          mode: "openai",
+        }),
+      });
+
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null);
+        throw new Error(payload?.error || "Math recognition failed");
+      }
+
+      const payload = await response.json();
+      const recognizedText = typeof payload?.latex === "string" ? payload.latex.trim() : "";
+      if (!recognizedText) {
+        return;
+      }
+
+      const updatedExpression = {
+        ...expression,
+        recognizedText,
+      };
+
+      appendSharedExpression(updatedExpression);
+      if (socketRef.current?.connected) {
+        socketRef.current.emit("expression:updated", updatedExpression);
+      }
+    } catch (error) {
+      console.error("Failed to recognize shared expression:", error);
+    }
+  };
+
+  const flushPendingExpression = async () => {
     const pendingStrokes = pendingExpressionStrokesRef.current;
-    if (!pendingStrokes.length || !socketRef.current?.connected) {
+    if (!pendingStrokes.length || !socketRef.current?.connected || !excalidrawAPI) {
       pendingExpressionStrokesRef.current = [];
       return;
     }
 
+    const elements = getSerializableExpressionElements(excalidrawAPI.getSceneElements());
+    const previewUrl = await renderExpressionPreview(elements, excalidrawAPI.getFiles?.() || {});
     const expression = {
       expressionId: uuidv4(),
       strokes: pendingStrokes,
+      elements,
+      previewUrl,
       userId: userIdRef.current,
       color: userColorRef.current || colorManagerRef.current.getColorForUser(userIdRef.current),
       timestamp: Date.now(),
       sessionId: sessionIdRef.current,
+      recognizedText: "",
     };
 
     pendingExpressionStrokesRef.current = [];
     socketRef.current.emit("expression:created", expression);
     appendSharedExpression(expression);
+    void recognizeSharedExpression(expression);
   };
 
   const queueExpressionStroke = (stroke) => {
@@ -512,6 +636,7 @@ function App() {
   const handleSceneChange = (elements) => {
     const nextElements = Array.isArray(elements) ? elements : [];
     const nextActiveStrokeIds = new Set();
+    const previousActiveStrokeIds = activeStrokeElementIdsRef.current;
 
     nextElements.forEach((element) => {
       if (!isStrokeElement(element)) {
@@ -537,10 +662,17 @@ function App() {
         userIdRef.current,
         userColor || colorManagerRef.current.getColorForUser(userIdRef.current),
       );
-      upsertSharedStroke(stroke);
       socketRef.current.emit("stroke", stroke);
       queueExpressionStroke(stroke);
     });
+
+    const removedStrokeIds = Array.from(previousActiveStrokeIds).filter((strokeId) => !nextActiveStrokeIds.has(strokeId));
+    if (removedStrokeIds.length > 0) {
+      removeSharedStrokesByIds(removedStrokeIds);
+      removedStrokeIds.forEach((strokeId) => {
+        sentStrokeVersionsRef.current.delete(strokeId);
+      });
+    }
 
     activeStrokeElementIdsRef.current = nextActiveStrokeIds;
     const signature = nextElements
@@ -576,36 +708,76 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (!excalidrawAPI || sharedStrokes.length === 0) {
+    if (!excalidrawAPI) {
       return;
     }
 
     const currentElements = excalidrawAPI.getSceneElements();
-    const elementMap = new Map(currentElements.map((element) => [element.id, element]));
-    let didChange = false;
-
+    const canonicalStrokeMap = new Map();
     sharedStrokes.forEach((stroke) => {
       const element = createStrokeElementFromPayload(stroke);
-      if (!element?.id) {
+      if (element?.id) {
+        canonicalStrokeMap.set(element.id, element);
+      }
+    });
+
+    if (canonicalStrokeMap.size === 0) {
+      return;
+    }
+
+    const nextElements = [];
+    const seenStrokeIds = new Set();
+    let didChange = false;
+
+    currentElements.forEach((currentElement) => {
+      const canonicalElement = canonicalStrokeMap.get(currentElement.id);
+      if (!canonicalElement) {
+        nextElements.push(currentElement);
         return;
       }
 
-      const existing = elementMap.get(element.id);
-      const existingVersion = Number.isFinite(existing?.version) ? existing.version : 0;
-      const incomingVersion = Number.isFinite(element?.version) ? element.version : 0;
+      seenStrokeIds.add(currentElement.id);
+      activeStrokeElementIdsRef.current.add(currentElement.id);
+      sentStrokeVersionsRef.current.set(
+        currentElement.id,
+        Number.isFinite(canonicalElement.version) ? canonicalElement.version : 0,
+      );
 
-      activeStrokeElementIdsRef.current.add(element.id);
-      sentStrokeVersionsRef.current.set(element.id, incomingVersion);
+      const existingVersion = Number.isFinite(currentElement?.version) ? currentElement.version : 0;
+      const incomingVersion = Number.isFinite(canonicalElement?.version) ? canonicalElement.version : 0;
+      const shouldReplace =
+        incomingVersion > existingVersion ||
+        currentElement.strokeColor !== canonicalElement.strokeColor ||
+        (currentElement.roughness ?? 1) !== (canonicalElement.roughness ?? 0) ||
+        (currentElement.strokeStyle ?? "solid") !== (canonicalElement.strokeStyle ?? "solid") ||
+        (currentElement.opacity ?? 100) !== (canonicalElement.opacity ?? 100);
 
-      if (!existing || incomingVersion > existingVersion) {
-        elementMap.set(element.id, element);
+      if (shouldReplace) {
+        nextElements.push(canonicalElement);
         didChange = true;
+        return;
       }
+
+      nextElements.push(currentElement);
+    });
+
+    canonicalStrokeMap.forEach((canonicalElement, strokeId) => {
+      if (seenStrokeIds.has(strokeId)) {
+        return;
+      }
+
+      activeStrokeElementIdsRef.current.add(strokeId);
+      sentStrokeVersionsRef.current.set(
+        strokeId,
+        Number.isFinite(canonicalElement.version) ? canonicalElement.version : 0,
+      );
+      nextElements.push(canonicalElement);
+      didChange = true;
     });
 
     if (didChange) {
       excalidrawAPI.updateScene({
-        elements: Array.from(elementMap.values()),
+        elements: nextElements,
       });
     }
   }, [excalidrawAPI, sharedStrokes]);
@@ -627,7 +799,16 @@ function App() {
     userIdRef.current = userId;
     sessionIdRef.current = sessionId;
 
-    const color = colorManagerRef.current.assignColorToUser(userId);
+    const storedColorKey = `talkSketchUserColor:${userId}`;
+    const storedColor = localStorage.getItem(storedColorKey);
+    const color = storedColor
+      ? colorManagerRef.current.setColorForUser(userId, storedColor)
+      : colorManagerRef.current.assignColorToUser(userId);
+
+    if (!storedColor) {
+      localStorage.setItem(storedColorKey, color);
+    }
+
     setUserColor(color);
     userColorRef.current = color;
 
@@ -642,14 +823,20 @@ function App() {
 
     socket.on("connect", () => {
       console.log(`Connected to collaboration server as socket ${socket.id}`);
-      socket.emit("user:join", { userId, sessionId });
+      socket.emit("user:join", { userId, sessionId, color });
     });
 
     socket.on("user:joined", (payload) => {
       const { userId: newUserId, color: newColor, connectionCount } = payload;
+      if (newColor) {
+        colorManagerRef.current.setColorForUser(newUserId, newColor);
+      }
       setActiveUsers((prev) => {
         const next = new Map(prev);
-        next.set(newUserId, { color: newColor, connectionCount });
+        next.set(newUserId, {
+          color: newColor || colorManagerRef.current.getColorForUser(newUserId),
+          connectionCount,
+        });
         return next;
       });
       console.log(`User ${newUserId} joined with color ${newColor} (${connectionCount} connection(s))`);
@@ -657,10 +844,16 @@ function App() {
 
     socket.on("user:updated", (payload) => {
       const { userId: updatedUserId, color: updatedColor, connectionCount } = payload;
+      if (updatedColor) {
+        colorManagerRef.current.setColorForUser(updatedUserId, updatedColor);
+      }
       setActiveUsers((prev) => {
         const next = new Map(prev);
         if (connectionCount > 0) {
-          next.set(updatedUserId, { color: updatedColor, connectionCount });
+          next.set(updatedUserId, {
+            color: updatedColor || colorManagerRef.current.getColorForUser(updatedUserId),
+            connectionCount,
+          });
         } else {
           next.delete(updatedUserId);
         }
@@ -682,7 +875,13 @@ function App() {
       const { users } = payload;
       const userMap = new Map();
       users.forEach(({ userId: uId, color: c, connectionCount }) => {
-        userMap.set(uId, { color: c, connectionCount });
+        if (c) {
+          colorManagerRef.current.setColorForUser(uId, c);
+        }
+        userMap.set(uId, {
+          color: c || colorManagerRef.current.getColorForUser(uId),
+          connectionCount,
+        });
       });
       setActiveUsers(userMap);
     });
@@ -706,6 +905,10 @@ function App() {
 
     socket.on("expression:created", (payload) => {
       appendSharedExpression(payload, { notify: payload.sessionId !== sessionIdRef.current });
+    });
+
+    socket.on("expression:updated", (payload) => {
+      appendSharedExpression(payload);
     });
 
     socket.on("connect_error", (error) => {
@@ -779,7 +982,11 @@ function App() {
       const response = await fetch("/recognize-math", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ imageData, apiKey }),
+        body: JSON.stringify({
+          image: imageData,
+          apiKey,
+          mode: "openai",
+        }),
         signal: abortController.signal,
       });
 
@@ -932,7 +1139,7 @@ function App() {
       appendMessage(
         "assistant",
         recognitionError ||
-          "GPT-4o could not confidently read the handwritten math yet. Try waiting a moment or redrawing the symbols a bit more clearly.",
+          "GPT-5.4 could not confidently read the handwritten math yet. Try waiting a moment or redrawing the symbols a bit more clearly.",
       );
       return;
     }
@@ -1018,7 +1225,11 @@ function App() {
   return (
     <div className="app-shell">
       <div className="board-area">
-        <Whiteboard onApiReady={setExcalidrawAPI} onSceneChange={handleSceneChange} />
+        <Whiteboard
+          strokeColor={SHARED_STROKE_RENDER_COLOR}
+          onApiReady={setExcalidrawAPI}
+          onSceneChange={handleSceneChange}
+        />
         {expressionNotice && latestSharedExpression ? (
           <div className="expression-notice">
             <div className="expression-notice-title">{expressionNotice.message}</div>
@@ -1078,7 +1289,7 @@ function App() {
         <div className="recognition-card">
           <div className="recognition-title">Live Math Recognition</div>
           <div className="recognition-body">
-            {isRecognizingMath ? "Recognizing current handwriting with GPT-4o..." : null}
+            {isRecognizingMath ? "Recognizing current handwriting with GPT-5.4..." : null}
             {!isRecognizingMath && recognitionError ? (
               <p className="recognition-error">{recognitionError}</p>
             ) : null}
@@ -1199,13 +1410,27 @@ function App() {
                         <div className="history-item-text">
                           {expressionCreatorLabel(item.content?.expression, userIdRef.current)} shared an expression.
                         </div>
-                        <div className="history-item-meta">{item.content?.strokeCount || 0} stroke(s)</div>
+                        <div className="history-item-meta">
+                          {item.content?.elementCount || item.content?.strokeCount || 0} element(s)
+                          {(Array.isArray(item.content?.usersInvolved)
+                            ? item.content.usersInvolved
+                            : getExpressionUserIds(item.content?.expression)).length > 0
+                            ? ` • Users: ${(Array.isArray(item.content?.usersInvolved)
+                              ? item.content.usersInvolved
+                              : getExpressionUserIds(item.content?.expression)).join(", ")}`
+                            : ""}
+                        </div>
                         {item.content?.expression ? (
                           <SharedExpressionPreview
                             expression={item.content.expression}
                             currentUserId={userIdRef.current}
                             highlighted={highlightedExpressionId === item.content.expression.expressionId}
                           />
+                        ) : null}
+                        {item.content?.recognizedText ? (
+                          <div className="history-item-text">
+                            Recognized math: <code>{item.content.recognizedText}</code>
+                          </div>
                         ) : null}
                       </>
                     ) : (

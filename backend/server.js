@@ -23,6 +23,8 @@ const PYTHON_BIN = process.env.COMER_PYTHON_BIN || process.env.PIX2TEXT_PYTHON_B
 const OCR_WORKER_PATH = path.join(__dirname, "scripts", "comer_worker.py");
 const OCR_WARMUP_SAMPLE_PATH = path.join(__dirname, "example", "UN19_1041_em_595.bmp");
 const RECOGNITION_CACHE_LIMIT = 64;
+const MATH_RECOGNITION_PROVIDER = (process.env.MATH_RECOGNITION_PROVIDER || "openai").trim().toLowerCase();
+const USE_COMER_RECOGNITION = MATH_RECOGNITION_PROVIDER === "comer";
 let ocrWorkerPromise = null;
 let ocrWorker = null;
 const recognitionCache = new Map();
@@ -180,26 +182,30 @@ function setCachedRecognition(cacheKey, result) {
   }
 }
 
-ensureRecognitionWorker()
-  .then((worker) => {
-    const model = worker?.readyState?.model || "unknown model";
-    const device = worker?.readyState?.device || "unknown device";
-    console.log(`CoMER worker ready on ${device} using ${model}`);
+if (USE_COMER_RECOGNITION) {
+  ensureRecognitionWorker()
+    .then((worker) => {
+      const model = worker?.readyState?.model || "unknown model";
+      const device = worker?.readyState?.device || "unknown device";
+      console.log(`CoMER worker ready on ${device} using ${model}`);
 
-    if (fs.existsSync(OCR_WARMUP_SAMPLE_PATH)) {
-      const warmupImageData = `data:image/bmp;base64,${fs.readFileSync(OCR_WARMUP_SAMPLE_PATH).toString("base64")}`;
-      requestRecognition(warmupImageData)
-        .then(() => {
-          console.log("CoMER worker warmup complete.");
-        })
-        .catch((error) => {
-          console.error(`CoMER warmup failed: ${error instanceof Error ? error.message : "unknown error"}`);
-        });
-    }
-  })
-  .catch((error) => {
-    console.error(error instanceof Error ? error.message : "CoMER worker failed to start.");
-  });
+      if (fs.existsSync(OCR_WARMUP_SAMPLE_PATH)) {
+        const warmupImageData = `data:image/bmp;base64,${fs.readFileSync(OCR_WARMUP_SAMPLE_PATH).toString("base64")}`;
+        requestRecognition(warmupImageData)
+          .then(() => {
+            console.log("CoMER worker warmup complete.");
+          })
+          .catch((error) => {
+            console.error(`CoMER warmup failed: ${error instanceof Error ? error.message : "unknown error"}`);
+          });
+      }
+    })
+    .catch((error) => {
+      console.error(error instanceof Error ? error.message : "CoMER worker failed to start.");
+    });
+} else {
+  console.log("Math recognition provider: GPT-5.4");
+}
 
 async function requestRecognition(imageData) {
   const worker = await ensureRecognitionWorker();
@@ -214,6 +220,38 @@ async function requestRecognition(imageData) {
       reject(new Error(`Unable to send request to CoMER worker: ${error.message}`));
     });
   });
+}
+
+async function requestOpenAiRecognition(image, apiKey) {
+  const resolvedApiKey = typeof apiKey === "string" && apiKey.startsWith("sk-")
+    ? apiKey
+    : process.env.OPENAI_API_KEY;
+
+  if (!resolvedApiKey) {
+    throw new Error("OpenAI API key is required for GPT-5.4 math recognition.");
+  }
+
+  const client = new OpenAI({ apiKey: resolvedApiKey });
+  const response = await client.responses.create({
+    model: "gpt-5.4",
+    input: [
+      {
+        role: "user",
+        content: [
+          {
+            type: "input_text",
+            text: "Recognize the handwritten math expression in this image and return only the final LaTeX.",
+          },
+          {
+            type: "input_image",
+            image_url: image,
+          },
+        ],
+      },
+    ],
+  });
+
+  return typeof response.output_text === "string" ? response.output_text.trim() : "";
 }
 
 process.on("exit", () => {
@@ -272,7 +310,35 @@ app.post("/analyze-sketch", async (req, res) => {
 });
 
 app.post("/recognize-math", async (req, res) => {
-  const { imageData } = req.body || {};
+  const { imageData, image, apiKey, mode } = req.body || {};
+
+  if (
+    mode === "openai" ||
+    !USE_COMER_RECOGNITION ||
+    (typeof image === "string" && image.trim())
+  ) {
+    try {
+      const latex = await requestOpenAiRecognition(
+        typeof image === "string" && image.trim() ? image.trim() : imageData,
+        apiKey,
+      );
+      res.json({
+        latex,
+        normalized: latex,
+        score: null,
+        model: "gpt-5.4",
+        isReliable: Boolean(latex),
+        issues: latex ? [] : ["no_content"],
+        cached: false,
+      });
+    } catch (error) {
+      res.status(503).json({
+        error: error instanceof Error ? error.message : "GPT-5.4 recognition failed.",
+        model: "gpt-5.4",
+      });
+    }
+    return;
+  }
 
   if (typeof imageData !== "string" || !imageData.trim()) {
     res.json({ latex: "", normalized: "", score: null, model: "CoMER", isReliable: false, issues: ["no_image"] });

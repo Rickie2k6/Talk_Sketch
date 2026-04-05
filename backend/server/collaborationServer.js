@@ -1,12 +1,6 @@
 import { Server } from "socket.io";
 import { v4 as uuidv4 } from "uuid";
 
-const COLOR_PALETTE = [
-  "#FF6B6B", "#4ECDC4", "#45B7D1", "#FFA07A", "#98D8C8", "#F7DC6F",
-  "#BB8FCE", "#85C1E2", "#F8B88B", "#A9D6E5", "#EAA29B", "#B4E7E7",
-  "#FFB6B9", "#8FD14F", "#FF9999", "#FFEAA7",
-];
-
 class CollaborationServer {
   constructor(httpServer) {
     this.io = new Server(httpServer, {
@@ -14,24 +8,9 @@ class CollaborationServer {
     });
     this.users = new Map();
     this.socketToUser = new Map();
-    this.usedColors = new Set();
     this.strokes = new Map();
     this.expressions = [];
     this.setupSocketHandlers();
-  }
-
-  assignColor(userId) {
-    if (this.users.has(userId)) {
-      return this.users.get(userId).color;
-    }
-
-    const available = COLOR_PALETTE.filter((color) => !this.usedColors.has(color));
-    const color = available.length > 0
-      ? available[Math.floor(Math.random() * available.length)]
-      : COLOR_PALETTE[Math.floor(Math.random() * COLOR_PALETTE.length)];
-
-    this.usedColors.add(color);
-    return color;
   }
 
   getActiveUsersPayload() {
@@ -45,14 +24,18 @@ class CollaborationServer {
     }));
   }
 
-  registerSocket(userId, socket, sessionId) {
+  registerSocket(userId, socket, sessionId, color) {
     const existing = this.users.get(userId);
     const user = existing || {
-      color: this.assignColor(userId),
+      color: typeof color === "string" && color.trim() ? color.trim() : null,
       joinedAt: Date.now(),
       socketIds: new Set(),
       sessionIds: new Set(),
     };
+
+    if (typeof color === "string" && color.trim()) {
+      user.color = color.trim();
+    }
 
     user.socketIds.add(socket.id);
     if (sessionId) {
@@ -88,7 +71,6 @@ class CollaborationServer {
     const remainingConnections = user.socketIds.size;
     if (remainingConnections === 0) {
       this.users.delete(link.userId);
-      this.usedColors.delete(user.color);
       return { userId: link.userId, userRemoved: true, remainingConnections: 0 };
     }
 
@@ -106,8 +88,11 @@ class CollaborationServer {
         const sessionId = typeof payload.sessionId === "string" && payload.sessionId.trim()
           ? payload.sessionId.trim()
           : socket.id;
+        const color = typeof payload.color === "string" && payload.color.trim()
+          ? payload.color.trim()
+          : null;
 
-        const user = this.registerSocket(incomingUserId, socket, sessionId);
+        const user = this.registerSocket(incomingUserId, socket, sessionId, color);
         const activeUsers = this.getActiveUsersPayload();
 
         socket.emit("users:list", { users: activeUsers });
@@ -140,7 +125,9 @@ class CollaborationServer {
           ...payload,
           strokeId,
           userId,
-          color: userData.color,
+          color: typeof payload.color === "string" && payload.color.trim()
+            ? payload.color.trim()
+            : userData.color,
           timestamp,
           version: Number.isFinite(payload.version) ? payload.version : 1,
           socketId: socket.id,
@@ -179,15 +166,47 @@ class CollaborationServer {
         const expression = {
           expressionId,
           strokes: Array.isArray(payload.strokes) ? payload.strokes : [],
+          elements: Array.isArray(payload.elements) ? payload.elements : [],
+          previewUrl: typeof payload.previewUrl === "string" ? payload.previewUrl : "",
           userId,
-          color: userData.color,
+          color: typeof payload.color === "string" && payload.color.trim()
+            ? payload.color.trim()
+            : userData.color,
           timestamp: Number.isFinite(payload.timestamp) ? payload.timestamp : Date.now(),
           sessionId: socket.data.sessionId || null,
+          recognizedText: typeof payload.recognizedText === "string" ? payload.recognizedText : "",
         };
 
         this.expressions.push(expression);
         this.io.emit("expression:created", expression);
-        console.log(`Broadcast expression ${expressionId} from ${userId} (${expression.strokes.length} stroke(s))`);
+        console.log(`Broadcast expression ${expressionId} from ${userId} (${expression.elements.length} element(s))`);
+      });
+
+      socket.on("expression:updated", (payload = {}) => {
+        const expressionId = typeof payload.expressionId === "string" && payload.expressionId.trim()
+          ? payload.expressionId.trim()
+          : null;
+
+        if (!expressionId) {
+          return;
+        }
+
+        const index = this.expressions.findIndex((expression) => expression.expressionId === expressionId);
+        if (index === -1) {
+          return;
+        }
+
+        const current = this.expressions[index];
+        const updatedExpression = {
+          ...current,
+          elements: Array.isArray(payload.elements) ? payload.elements : current.elements,
+          previewUrl: typeof payload.previewUrl === "string" ? payload.previewUrl : current.previewUrl,
+          recognizedText: typeof payload.recognizedText === "string" ? payload.recognizedText : current.recognizedText,
+          strokes: Array.isArray(payload.strokes) ? payload.strokes : current.strokes,
+        };
+
+        this.expressions[index] = updatedExpression;
+        this.io.emit("expression:updated", updatedExpression);
       });
 
       socket.on("user:leave", () => {

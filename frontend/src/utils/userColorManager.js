@@ -31,45 +31,45 @@ class UserColorManager {
     this.usedColors = new Set();
   }
 
-  /**
-   * Assign a random color to a user
-   * Ensures no collisions among active users
-   * @param {string} userId - Unique user identifier
-   * @returns {string} - Assigned color (hex)
-   */
+  getDeterministicColor(userId) {
+    const input = String(userId || "");
+    let hash = 0;
+
+    for (let index = 0; index < input.length; index += 1) {
+      hash = ((hash << 5) - hash + input.charCodeAt(index)) | 0;
+    }
+
+    return COLOR_PALETTE[Math.abs(hash) % COLOR_PALETTE.length];
+  }
+
   assignColorToUser(userId) {
-    // Check if user already has a color
     if (this.userColorMap.has(userId)) {
       return this.userColorMap.get(userId);
     }
 
-    // Find available colors
-    const availableColors = COLOR_PALETTE.filter(
-      (color) => !this.usedColors.has(color)
-    );
-
-    if (availableColors.length === 0) {
-      // Fallback: if all colors are used, reuse colors but log warning
-      console.warn(
-        'All colors in palette exhausted. Reusing colors for new user.'
-      );
-      // Return a color anyway (with potential visual collision)
-      const randomColor =
-        COLOR_PALETTE[Math.floor(Math.random() * COLOR_PALETTE.length)];
-      this.userColorMap.set(userId, randomColor);
-      return randomColor;
-    }
-
-    // Randomly select from available colors
-    const selectedColor =
-      availableColors[Math.floor(Math.random() * availableColors.length)];
-
-    // Map the color to user
+    const selectedColor = this.getDeterministicColor(userId);
     this.userColorMap.set(userId, selectedColor);
     this.usedColors.add(selectedColor);
     this.colorUsageMap.set(selectedColor, userId);
 
     return selectedColor;
+  }
+
+  setColorForUser(userId, color) {
+    if (!userId || !color) {
+      return null;
+    }
+
+    const previousColor = this.userColorMap.get(userId);
+    if (previousColor && previousColor !== color) {
+      this.usedColors.delete(previousColor);
+      this.colorUsageMap.delete(previousColor);
+    }
+
+    this.userColorMap.set(userId, color);
+    this.usedColors.add(color);
+    this.colorUsageMap.set(color, userId);
+    return color;
   }
 
   /**

@@ -1,6 +1,24 @@
 const HISTORY_KEY = "talk-sketch-history";
 const MAX_HISTORY_ITEMS = 200;
 
+function getExpressionUserIds(expression) {
+  const userIds = new Set();
+
+  if (typeof expression?.userId === "string" && expression.userId.trim()) {
+    userIds.add(expression.userId.trim());
+  }
+
+  if (Array.isArray(expression?.strokes)) {
+    expression.strokes.forEach((stroke) => {
+      if (typeof stroke?.userId === "string" && stroke.userId.trim()) {
+        userIds.add(stroke.userId.trim());
+      }
+    });
+  }
+
+  return Array.from(userIds);
+}
+
 function toTimestamp(value) {
   if (typeof value === "number" && Number.isFinite(value)) {
     return value;
@@ -36,6 +54,10 @@ function normalizeHistoryItem(entry) {
             text: entry.text || "",
             expressionId: entry.metadata?.expressionId || entry.id || null,
             strokeCount: entry.metadata?.strokeCount || 0,
+            elementCount: entry.metadata?.elementCount || 0,
+            previewUrl: entry.metadata?.previewUrl || null,
+            recognizedText: entry.metadata?.recognizedText || "",
+            usersInvolved: entry.metadata?.usersInvolved || [],
             expression: entry.metadata?.expression || null,
           }
         : {
@@ -83,12 +105,11 @@ export function addHistoryEntry(entry) {
     return null;
   }
 
-  const existing = history.find((item) => item.id === normalized.id);
-  if (existing) {
-    return existing;
-  }
-
-  const nextHistory = [...history, normalized];
+  const existingIndex = history.findIndex((item) => item.id === normalized.id);
+  const nextHistory =
+    existingIndex === -1
+      ? [...history, normalized]
+      : history.map((item, index) => (index === existingIndex ? normalized : item));
   saveHistory(nextHistory);
   return normalized;
 }
@@ -119,7 +140,14 @@ export function addExpressionToHistory(expression) {
       expressionId: expression.expressionId,
       expression,
       strokeCount: Array.isArray(expression.strokes) ? expression.strokes.length : 0,
-      text: `${expression.userId || "A user"} shared an expression.`,
+      elementCount: Array.isArray(expression.elements) ? expression.elements.length : 0,
+      previewUrl: expression.previewUrl || null,
+      recognizedText: typeof expression.recognizedText === "string" ? expression.recognizedText : "",
+      usersInvolved: getExpressionUserIds(expression),
+      text:
+        typeof expression.recognizedText === "string" && expression.recognizedText.trim()
+          ? expression.recognizedText.trim()
+          : `${expression.userId || "A user"} shared an expression.`,
     },
     userId: expression.userId || null,
     color: expression.color || null,
