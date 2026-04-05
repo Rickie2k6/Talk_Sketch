@@ -1,0 +1,298 @@
+/* User Attribution & Collaboration Styles */
+
+.user-attribution-panel {
+  border: 1px solid #d7def0;
+  border-radius: 12px;
+  background: #ffffff;
+  padding: 12px;
+  margin-bottom: 12px;
+}
+
+.attribution-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #eee;
+}
+
+.attribution-header h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
+  color: #1f2a44;
+}
+
+.user-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  height: 24px;
+  background: #e3f2fd;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #1976d2;
+}
+
+.users-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 200px;
+  overflow-y: auto;
+  margin-bottom: 8px;
+}
+
+.user-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px;
+  border-radius: 6px;
+  background: #f9f9f9;
+  transition: all 0.2s;
+}
+
+.user-item:hover {
+  background: #f0f0f0;
+}
+
+.user-color-indicator {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid #fff;
+  box-shadow: 0 0 4px rgba(0, 0, 0, 0.1);
+  flex-shrink: 0;
+}
+
+.user-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.user-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #1f2a44;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.badge-current {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px 6px;
+  background: #e8f5e9;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 700;
+  color: #2e7d32;
+  white-space: nowrap;
+}
+
+.user-strokes {
+  font-size: 11px;
+  color: #7b8297;
+  margin-top: 2px;
+}
+
+.attribution-footer {
+  padding-top: 8px;
+  border-top: 1px solid #eee;
+}
+
+.footer-info {
+  font-size: 11px;
+  color: #7b8297;
+  text-align: center;
+}
+
+/* Provenance Tooltip */
+
+.provenance-tooltip {
+  background: white;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  padding: 10px;
+  font-size: 12px;
+  z-index: 1000;
+  min-width: 200px;
+  max-width: 300px;
+}
+
+.provenance-header {
+  font-weight: 700;
+  color: #1f2a44;
+  margin-bottom: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid #eee;
+}
+
+.provenance-content {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.provenance-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.provenance-item.deleted {
+  opacity: 0.6;
+  color: #d32f2f;
+}
+
+.provenance-item .label {
+  font-weight: 600;
+  color: #627093;
+  white-space: nowrap;
+}
+
+.provenance-item .value {
+  color: #1f2a44;
+  flex: 1;
+  text-align: right;
+  word-break: break-word;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.color-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+}
+
+/* Collaboration Stats */
+
+.collaboration-stats {
+  border: 1px solid #d7def0;
+  border-radius: 12px;
+  background: #f9fbff;
+  padding: 12px;
+  margin-bottom: 12px;
+}
+
+.stats-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: #627093;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  margin-bottom: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid #d7def0;
+}
+
+.stats-content {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.stat-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.stat-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: #7b8297;
+}
+
+.stat-value {
+  font-size: 14px;
+  font-weight: 700;
+  color: #2f5bff;
+}
+
+/* Stroke Visual Indicators */
+
+.stroke-creator-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  background: #f5f5f5;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.stroke-creator-badge .color {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+}
+
+/* User Cursor Indicator */
+
+.remote-cursor {
+  position: absolute;
+  width: 20px;
+  height: 20px;
+  pointer-events: none;
+  z-index: 100;
+}
+
+.remote-cursor-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 2px solid;
+  background: transparent;
+}
+
+.remote-cursor-label {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  background: white;
+  padding: 2px 6px;
+  border: 1px solid #ddd;
+  border-radius: 2px;
+  font-size: 10px;
+  font-weight: 600;
+  white-space: nowrap;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+}
+
+/* Responsive */
+
+@media (max-width: 600px) {
+  .user-attribution-panel {
+    padding: 10px;
+  }
+
+  .users-list {
+    max-height: 150px;
+  }
+
+  .provenance-tooltip {
+    min-width: 150px;
+    max-width: 250px;
+    font-size: 11px;
+  }
+}
