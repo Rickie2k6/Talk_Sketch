@@ -1,6 +1,8 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
+import { BrowserRouter, Route, Routes } from "react-router-dom";
 import App from "./App";
+import HomePage from "./HomePage";
 
 class FatalErrorBoundary extends React.Component {
   constructor(props) {
@@ -67,7 +69,13 @@ window.addEventListener("unhandledrejection", (event) => {
 ReactDOM.createRoot(rootElement).render(
   <React.StrictMode>
     <FatalErrorBoundary>
-      <App />
+      <BrowserRouter>
+        <Routes>
+          <Route path="/" element={<HomePage />} />
+          <Route path="/room/:roomId" element={<App />} />
+          <Route path="*" element={<HomePage />} />
+        </Routes>
+      </BrowserRouter>
     </FatalErrorBoundary>
   </React.StrictMode>,
 );

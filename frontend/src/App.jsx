@@ -1,13 +1,20 @@
 import { exportToBlob, exportToCanvas } from "@excalidraw/excalidraw";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate, useParams } from "react-router-dom";
 import { io } from "socket.io-client";
 import { v4 as uuidv4 } from "uuid";
 import "./App.css";
 import "../ai_chatbox/history.css";
 import Whiteboard from "./library/Whiteboard.jsx";
 import { addMessageToHistory, addExpressionToHistory, getHistory, clearHistory, downloadHistoryAsFile } from "../ai_chatbox/history.js";
+import {
+  buildRoomPath,
+  createRoomId,
+  getOrCreateGuestIdentity,
+  normalizeRoomId,
+} from "./utils/collaborationIdentity.js";
+import { buildSceneSignature, cloneSceneElements, diffSceneActions } from "./utils/sceneAttribution.js";
 import UserColorManager from "./utils/userColorManager.js";
-import StrokeTracker from "./utils/strokeTracker.js";
 
 const RECOGNITION_DEBOUNCE_MS = 450;
 const RECOGNITION_EXPORT_PADDING = 24;
@@ -16,6 +23,8 @@ const RECOGNITION_EXPORT_MAX_DIMENSION = 1200;
 const RECOGNITION_EXPORT_MAX_PIXELS = 900000;
 const LOCAL_EXPRESSION_IDLE_MS = 2000;
 const EXPRESSION_NOTICE_DURATION_MS = 2800;
+const SCENE_SYNC_DEBOUNCE_MS = 200;
+const SHARED_RECOGNITION_FEED_LIMIT = 8;
 const SHARED_STROKE_RENDER_COLOR = "#000000";
 const EXPRESSION_PREVIEW_BACKGROUND = "#ffffff";
 const EXPRESSION_QUESTION_PATTERNS = [
@@ -34,6 +43,19 @@ const EXPRESSION_QUESTION_PATTERNS = [
 const supportsSpeechRecognition =
   typeof window !== "undefined" &&
   ("SpeechRecognition" in window || "webkitSpeechRecognition" in window);
+
+function getCollaborationServerUrl() {
+  const configuredUrl = import.meta.env.VITE_COLLAB_SERVER_URL;
+  if (typeof configuredUrl === "string" && configuredUrl.trim()) {
+    return configuredUrl.trim();
+  }
+
+  if (typeof window === "undefined") {
+    return "http://127.0.0.1:8099";
+  }
+
+  return `${window.location.protocol}//${window.location.hostname}:8099`;
+}
 
 function createRecognition({ onText, onStop }) {
   const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -66,6 +88,34 @@ function createRecognition({ onText, onStop }) {
 function isExpressionQuestion(message) {
   const value = message.trim().toLowerCase();
   return EXPRESSION_QUESTION_PATTERNS.some((pattern) => value.includes(pattern));
+}
+
+function formatRoomEventLabel(event, currentUserId) {
+  const actor = event?.userId === currentUserId
+    ? "You"
+    : event?.displayName || (typeof event?.userId === "string" ? event.userId.slice(0, 6) : "Guest");
+  const strokeLabel = event?.strokeId ? ` stroke ${event.strokeId.slice(0, 6)}` : "";
+
+  switch (event?.actionType) {
+    case "create":
+      return `${actor} created${strokeLabel}`;
+    case "update":
+      return `${actor} updated${strokeLabel}`;
+    case "delete":
+      return `${actor} deleted${strokeLabel}`;
+    case "clear":
+      return `${actor} cleared the board`;
+    default:
+      return `${actor} changed the board`;
+  }
+}
+
+function buildRoomShareUrl(roomId) {
+  if (typeof window === "undefined") {
+    return buildRoomPath(roomId);
+  }
+
+  return `${window.location.origin}${buildRoomPath(roomId)}`;
 }
 
 function formatRecognizedMathPreview(latex) {
@@ -203,14 +253,8 @@ async function exportSceneImage(excalidrawAPI) {
   return blobToDataURL(normalizedBlob);
 }
 
-function getSerializableExpressionElements(elements) {
-  return (Array.isArray(elements) ? elements : [])
-    .filter((element) => element && !element.isDeleted)
-    .map((element) => JSON.parse(JSON.stringify(element)));
-}
-
 async function renderExpressionPreview(elements, files = {}) {
-  const safeElements = getSerializableExpressionElements(elements);
+  const safeElements = cloneSceneElements(elements);
   if (safeElements.length === 0) {
     return "";
   }
@@ -229,111 +273,29 @@ async function renderExpressionPreview(elements, files = {}) {
   return canvas.toDataURL("image/png");
 }
 
-function isStrokeElement(element) {
-  return Boolean(element) && !element.isDeleted && Array.isArray(element.points) && element.points.length > 1;
-}
-
-function createStrokePayload(element, userId, color, timestamp = Date.now()) {
-  return {
-    strokeId: typeof element.id === "string" ? element.id : uuidv4(),
-    userId,
-    color,
-    timestamp,
-    version: Number.isFinite(element.version) ? element.version : 1,
-    type: element.type,
-    x: Number.isFinite(element.x) ? element.x : 0,
-    y: Number.isFinite(element.y) ? element.y : 0,
-    width: Number.isFinite(element.width) ? element.width : 0,
-    height: Number.isFinite(element.height) ? element.height : 0,
-    points: Array.isArray(element.points)
-      ? element.points.map((point) => ({
-        x: Number.isFinite(point?.[0]) ? point[0] : 0,
-        y: Number.isFinite(point?.[1]) ? point[1] : 0,
-      }))
-      : [],
-    element: JSON.parse(JSON.stringify(element)),
-  };
-}
-
-function createStrokeElementFromPayload(stroke) {
-  if (stroke?.element && typeof stroke.element === "object") {
-    const element = JSON.parse(JSON.stringify(stroke.element));
-    element.id = stroke.strokeId || element.id;
-    if (Array.isArray(stroke.points)) {
-      element.points = stroke.points.map((point) => [
-        Number.isFinite(point?.x) ? point.x : 0,
-        Number.isFinite(point?.y) ? point.y : 0,
-      ]);
-    }
-    element.strokeColor = SHARED_STROKE_RENDER_COLOR;
-    element.roughness = 0;
-    element.strokeStyle = "solid";
-    element.opacity = 100;
-    if (Number.isFinite(stroke.version)) {
-      element.version = stroke.version;
-    }
-    return element;
-  }
-
-  return null;
-}
-
-function getStrokeBounds(stroke) {
-  const absolutePoints = Array.isArray(stroke?.points)
-    ? stroke.points.map((point) => [
-      (Number.isFinite(stroke?.x) ? stroke.x : 0) + (Number.isFinite(point?.x) ? point.x : 0),
-      (Number.isFinite(stroke?.y) ? stroke.y : 0) + (Number.isFinite(point?.y) ? point.y : 0),
-    ])
-    : [];
-
-  if (absolutePoints.length > 0) {
-    const xs = absolutePoints.map(([x]) => x);
-    const ys = absolutePoints.map(([, y]) => y);
-    return {
-      minX: Math.min(...xs),
-      maxX: Math.max(...xs),
-      minY: Math.min(...ys),
-      maxY: Math.max(...ys),
-    };
-  }
-
-  const x = Number.isFinite(stroke?.x) ? stroke.x : 0;
-  const y = Number.isFinite(stroke?.y) ? stroke.y : 0;
-  const width = Number.isFinite(stroke?.width) ? stroke.width : 1;
-  const height = Number.isFinite(stroke?.height) ? stroke.height : 1;
-  return {
-    minX: x,
-    maxX: x + Math.max(width, 1),
-    minY: y,
-    maxY: y + Math.max(height, 1),
-  };
-}
-
-function getExpressionBounds(strokes) {
-  if (!Array.isArray(strokes) || strokes.length === 0) {
-    return { minX: 0, minY: 0, width: 100, height: 60 };
-  }
-
-  const bounds = strokes.map(getStrokeBounds);
-  const minX = Math.min(...bounds.map((bound) => bound.minX));
-  const maxX = Math.max(...bounds.map((bound) => bound.maxX));
-  const minY = Math.min(...bounds.map((bound) => bound.minY));
-  const maxY = Math.max(...bounds.map((bound) => bound.maxY));
-
-  return {
-    minX,
-    minY,
-    width: Math.max(maxX - minX, 40),
-    height: Math.max(maxY - minY, 24),
-  };
-}
-
 function expressionCreatorLabel(expression, currentUserId) {
   if (expression?.userId === currentUserId) {
     return "You";
   }
 
+  if (typeof expression?.displayName === "string" && expression.displayName.trim()) {
+    return expression.displayName.trim();
+  }
+
   const shortId = typeof expression?.userId === "string" ? expression.userId.slice(0, 4) : "user";
+  return `User ${shortId}`;
+}
+
+function recognitionCreatorLabel(recognition, currentUserId) {
+  if (recognition?.userId === currentUserId) {
+    return "You";
+  }
+
+  if (typeof recognition?.displayName === "string" && recognition.displayName.trim()) {
+    return recognition.displayName.trim();
+  }
+
+  const shortId = typeof recognition?.userId === "string" ? recognition.userId.slice(0, 4) : "user";
   return `User ${shortId}`;
 }
 
@@ -414,24 +376,39 @@ function SharedExpressionPreview({ expression, currentUserId, highlighted = fals
 }
 
 function App() {
+  const navigate = useNavigate();
+  const { roomId: routeRoomId } = useParams();
+  const roomId = useMemo(() => normalizeRoomId(routeRoomId || "lobby"), [routeRoomId]);
+
   // User & Collaboration
   const userIdRef = useRef(null);
+  const displayNameRef = useRef("");
+  const roomIdRef = useRef(roomId);
+  const previousSceneElementsRef = useRef([]);
   const [userColor, setUserColor] = useState(null);
+  const [displayName, setDisplayName] = useState("");
+  const [roomInput, setRoomInput] = useState(roomId);
+  const [identityReady, setIdentityReady] = useState(false);
+  const [isLoadingScene, setIsLoadingScene] = useState(false);
   const [activeUsers, setActiveUsers] = useState(new Map());
   const [historyItems, setHistoryItems] = useState([]);
-  const [sharedStrokes, setSharedStrokes] = useState([]);
+  const [sharedRecognitions, setSharedRecognitions] = useState([]);
+  const [collaborationEvents, setCollaborationEvents] = useState([]);
   const [expressionNotice, setExpressionNotice] = useState(null);
   const [highlightedExpressionId, setHighlightedExpressionId] = useState("");
   const socketRef = useRef(null);
-  const strokeTrackerRef = useRef(null);
   const sessionIdRef = useRef(null);
   const userColorRef = useRef(null);
   const colorManagerRef = useRef(new UserColorManager());
-  const activeStrokeElementIdsRef = useRef(new Set());
-  const sentStrokeVersionsRef = useRef(new Map());
-  const pendingExpressionStrokesRef = useRef([]);
   const expressionIdleTimerRef = useRef(null);
   const expressionNoticeTimerRef = useRef(null);
+  const sceneSyncTimerRef = useRef(null);
+  const remoteSceneTimerRef = useRef(null);
+  const sceneLoadingTimerRef = useRef(null);
+  const pendingRemoteSceneRef = useRef(null);
+  const isApplyingRemoteSceneRef = useRef(false);
+  const lastEmittedSceneSignatureRef = useRef("");
+  const lastSharedExpressionSignatureRef = useRef("");
 
   // Existing states
   const [excalidrawAPI, setExcalidrawAPI] = useState(null);
@@ -455,6 +432,7 @@ function App() {
   const latestSceneSignatureRef = useRef("");
   const recognitionRequestSerialRef = useRef(0);
   const pendingRecognitionSignatureRef = useRef("");
+  const lastBroadcastRecognitionKeyRef = useRef("");
 
   const canSend = useMemo(() => Boolean(chatInput.trim()) && !isSending, [chatInput, isSending]);
   const recognizedMathPreview = useMemo(
@@ -466,10 +444,33 @@ function App() {
     [activeUsers],
   );
   const expressionHistoryItems = useMemo(
-    () => historyItems.filter((item) => item.type === "expression"),
-    [historyItems],
+    () => historyItems.filter(
+      (item) => item.type === "expression" && item.content?.expression?.roomId === roomId,
+    ),
+    [historyItems, roomId],
   );
   const latestSharedExpression = expressionHistoryItems.at(-1)?.content?.expression || null;
+  const visibleRecognitions = useMemo(
+    () => [...sharedRecognitions]
+      .filter((item) => item.roomId === roomId)
+      .sort((left, right) => new Date(right.timestamp).getTime() - new Date(left.timestamp).getTime())
+      .slice(0, SHARED_RECOGNITION_FEED_LIMIT),
+    [sharedRecognitions, roomId],
+  );
+  const recentCollaborationEvents = useMemo(
+    () => [...collaborationEvents]
+      .filter((event) => event.roomId === roomId)
+      .sort((left, right) => new Date(right.timestamp).getTime() - new Date(left.timestamp).getTime())
+      .slice(0, 8),
+    [collaborationEvents, roomId],
+  );
+  const roomShareUrl = useMemo(() => buildRoomShareUrl(roomId), [roomId]);
+  const visibleHistoryItems = useMemo(
+    () => historyItems.filter(
+      (item) => item.type !== "expression" || item.content?.expression?.roomId === roomId,
+    ),
+    [historyItems, roomId],
+  );
 
   const mergeHistoryItem = (item) => {
     if (!item?.id) {
@@ -492,41 +493,24 @@ function App() {
     });
   };
 
-  const upsertSharedStroke = (stroke) => {
-    if (!stroke?.strokeId) {
+  const mergeCollaborationEvents = (events) => {
+    if (!Array.isArray(events) || events.length === 0) {
       return;
     }
 
-    setSharedStrokes((prev) => {
-      const index = prev.findIndex((entry) => entry.strokeId === stroke.strokeId);
-      if (index === -1) {
-        return [...prev, stroke];
-      }
+    setCollaborationEvents((prev) => {
+      const byId = new Map(prev.map((event) => [event.eventId, event]));
+      events.forEach((event) => {
+        if (!event?.eventId) {
+          return;
+        }
+        byId.set(event.eventId, event);
+      });
 
-      const current = prev[index];
-      const currentVersion = Number.isFinite(current?.version) ? current.version : 0;
-      const nextVersion = Number.isFinite(stroke?.version) ? stroke.version : 0;
-      if (nextVersion < currentVersion) {
-        return prev;
-      }
-
-      const next = [...prev];
-      next[index] = { ...current, ...stroke };
-      return next;
+      return Array.from(byId.values())
+        .sort((left, right) => new Date(left.timestamp).getTime() - new Date(right.timestamp).getTime())
+        .slice(-80);
     });
-  };
-
-  const removeSharedStrokesByIds = (strokeIds) => {
-    if (!Array.isArray(strokeIds) || strokeIds.length === 0) {
-      return;
-    }
-
-    const idsToRemove = new Set(strokeIds.filter(Boolean));
-    if (idsToRemove.size === 0) {
-      return;
-    }
-
-    setSharedStrokes((prev) => prev.filter((stroke) => !idsToRemove.has(stroke.strokeId)));
   };
 
   const appendSharedExpression = (expression, { notify = false } = {}) => {
@@ -551,6 +535,63 @@ function App() {
         expressionId: expression.expressionId,
         message: `${expressionCreatorLabel(expression, userIdRef.current)} added a new expression`,
       });
+    }
+  };
+
+  const mergeRecognitionItem = (item) => {
+    if (!item?.recognitionId || !item?.latex) {
+      return;
+    }
+
+    setSharedRecognitions((prev) => {
+      const existingIndex = prev.findIndex((entry) => entry.recognitionId === item.recognitionId);
+      const nextItems =
+        existingIndex === -1
+          ? [...prev, item]
+          : prev.map((entry, index) => (index === existingIndex ? item : entry));
+
+      return nextItems
+        .sort((left, right) => {
+          const leftTimestamp = new Date(left.timestamp || 0).getTime();
+          const rightTimestamp = new Date(right.timestamp || 0).getTime();
+          if (leftTimestamp !== rightTimestamp) {
+            return leftTimestamp - rightTimestamp;
+          }
+          return String(left.recognitionId).localeCompare(String(right.recognitionId));
+        })
+        .slice(-24);
+    });
+  };
+
+  const publishRecognizedMath = (latex, signature) => {
+    const cleanLatex = typeof latex === "string" ? latex.trim() : "";
+    if (!cleanLatex || !userIdRef.current) {
+      return;
+    }
+
+    const recognitionKey = `${roomIdRef.current}:${userIdRef.current}:${signature || cleanLatex}`;
+    if (recognitionKey === lastBroadcastRecognitionKeyRef.current) {
+      return;
+    }
+
+    lastBroadcastRecognitionKeyRef.current = recognitionKey;
+
+    const recognition = {
+      recognitionId: recognitionKey,
+      roomId: roomIdRef.current,
+      userId: userIdRef.current,
+      displayName: displayNameRef.current,
+      color: userColorRef.current || colorManagerRef.current.getColorForUser(userIdRef.current),
+      latex: cleanLatex,
+      timestamp: new Date().toISOString(),
+      sceneSignature: signature || "",
+      sessionId: sessionIdRef.current,
+    };
+
+    mergeRecognitionItem(recognition);
+
+    if (socketRef.current?.connected) {
+      socketRef.current.emit("recognition:created", recognition);
     }
   };
 
@@ -584,6 +625,8 @@ function App() {
 
       const updatedExpression = {
         ...expression,
+        roomId: roomIdRef.current,
+        displayName: displayNameRef.current,
         recognizedText,
       };
 
@@ -596,96 +639,155 @@ function App() {
     }
   };
 
-  const flushPendingExpression = async () => {
-    const pendingStrokes = pendingExpressionStrokesRef.current;
-    if (!pendingStrokes.length || !socketRef.current?.connected || !excalidrawAPI) {
-      pendingExpressionStrokesRef.current = [];
+  const applyRemoteScene = (elements) => {
+    const nextElements = cloneSceneElements(elements);
+    const signature = buildSceneSignature(nextElements);
+
+    console.log(
+      "[collab] applying remote scene",
+      { elementCount: nextElements.length, signature },
+    );
+
+    lastObservedSceneSignatureRef.current = signature;
+    latestSceneSignatureRef.current = signature;
+    lastEmittedSceneSignatureRef.current = signature;
+    previousSceneElementsRef.current = nextElements;
+    setSceneElements(nextElements);
+
+    if (!excalidrawAPI) {
+      pendingRemoteSceneRef.current = nextElements;
       return;
     }
 
-    const elements = getSerializableExpressionElements(excalidrawAPI.getSceneElements());
+    pendingRemoteSceneRef.current = null;
+    isApplyingRemoteSceneRef.current = true;
+    window.clearTimeout(sceneLoadingTimerRef.current);
+    setIsLoadingScene(true);
+    sceneLoadingTimerRef.current = window.setTimeout(() => {
+      setIsLoadingScene(false);
+    }, 1500);
+
+    try {
+      if (nextElements.length === 0 && typeof excalidrawAPI.resetScene === "function") {
+        // Remote clear must replace the full scene so stale elements cannot survive locally.
+        excalidrawAPI.resetScene({
+          resetLoadingState: false,
+          resetCamera: false,
+        });
+      } else {
+        excalidrawAPI.updateScene({ elements: nextElements });
+      }
+    } finally {
+      window.setTimeout(() => {
+        previousSceneElementsRef.current = nextElements;
+        lastObservedSceneSignatureRef.current = signature;
+        isApplyingRemoteSceneRef.current = false;
+        window.clearTimeout(sceneLoadingTimerRef.current);
+        sceneLoadingTimerRef.current = null;
+        setIsLoadingScene(false);
+      }, 0);
+    }
+  };
+
+  const flushPendingExpression = async () => {
+    if (!socketRef.current?.connected || !excalidrawAPI) {
+      return;
+    }
+
+    const elements = cloneSceneElements(excalidrawAPI.getSceneElements());
+    const sceneSignature = buildSceneSignature(elements);
+    if (!sceneSignature || sceneSignature === lastSharedExpressionSignatureRef.current) {
+      return;
+    }
+
     const previewUrl = await renderExpressionPreview(elements, excalidrawAPI.getFiles?.() || {});
     const expression = {
       expressionId: uuidv4(),
-      strokes: pendingStrokes,
+      roomId: roomIdRef.current,
+      strokes: [],
       elements,
       previewUrl,
       userId: userIdRef.current,
+      displayName: displayNameRef.current,
       color: userColorRef.current || colorManagerRef.current.getColorForUser(userIdRef.current),
-      timestamp: Date.now(),
+      timestamp: new Date().toISOString(),
       sessionId: sessionIdRef.current,
       recognizedText: "",
     };
 
-    pendingExpressionStrokesRef.current = [];
+    lastSharedExpressionSignatureRef.current = sceneSignature;
     socketRef.current.emit("expression:created", expression);
     appendSharedExpression(expression);
     void recognizeSharedExpression(expression);
   };
 
-  const queueExpressionStroke = (stroke) => {
-    pendingExpressionStrokesRef.current = [
-      ...pendingExpressionStrokesRef.current.filter((entry) => entry.strokeId !== stroke.strokeId),
-      stroke,
-    ];
-
+  const queueExpressionCapture = () => {
     window.clearTimeout(expressionIdleTimerRef.current);
-    expressionIdleTimerRef.current = window.setTimeout(flushPendingExpression, LOCAL_EXPRESSION_IDLE_MS);
+    expressionIdleTimerRef.current = window.setTimeout(() => {
+      void flushPendingExpression();
+    }, LOCAL_EXPRESSION_IDLE_MS);
   };
 
   const handleSceneChange = (elements) => {
-    const nextElements = Array.isArray(elements) ? elements : [];
-    const nextActiveStrokeIds = new Set();
-    const previousActiveStrokeIds = activeStrokeElementIdsRef.current;
-
-    nextElements.forEach((element) => {
-      if (!isStrokeElement(element)) {
-        return;
-      }
-
-      nextActiveStrokeIds.add(element.id);
-      const previousVersion = sentStrokeVersionsRef.current.get(element.id);
-      const nextVersion = Number.isFinite(element.version) ? element.version : 0;
-      if (previousVersion === nextVersion) {
-        return;
-      }
-
-      sentStrokeVersionsRef.current.set(element.id, nextVersion);
-      activeStrokeElementIdsRef.current.add(element.id);
-
-      if (!socketRef.current?.connected || !userIdRef.current) {
-        return;
-      }
-
-      const stroke = createStrokePayload(
-        element,
-        userIdRef.current,
-        userColor || colorManagerRef.current.getColorForUser(userIdRef.current),
-      );
-      socketRef.current.emit("stroke", stroke);
-      queueExpressionStroke(stroke);
-    });
-
-    const removedStrokeIds = Array.from(previousActiveStrokeIds).filter((strokeId) => !nextActiveStrokeIds.has(strokeId));
-    if (removedStrokeIds.length > 0) {
-      removeSharedStrokesByIds(removedStrokeIds);
-      removedStrokeIds.forEach((strokeId) => {
-        sentStrokeVersionsRef.current.delete(strokeId);
-      });
-    }
-
-    activeStrokeElementIdsRef.current = nextActiveStrokeIds;
-    const signature = nextElements
-      .map((element) => `${element?.id || "unknown"}:${element?.version || 0}:${element?.isDeleted ? 1 : 0}`)
-      .join("|");
-
+    const nextElements = cloneSceneElements(
+      excalidrawAPI?.getSceneElements?.() || elements,
+    );
+    const signature = buildSceneSignature(nextElements);
     if (signature === lastObservedSceneSignatureRef.current) {
       return;
     }
 
+    const previousElements = previousSceneElementsRef.current;
+    previousSceneElementsRef.current = nextElements;
     lastObservedSceneSignatureRef.current = signature;
     latestSceneSignatureRef.current = signature;
-    setSceneElements([...nextElements]);
+    setSceneElements(nextElements);
+
+    if (isApplyingRemoteSceneRef.current) {
+      return;
+    }
+
+    if (!socketRef.current?.connected || !userIdRef.current) {
+      return;
+    }
+
+    const actions = diffSceneActions(previousElements, nextElements, {
+      roomId: roomIdRef.current,
+      userId: userIdRef.current,
+      displayName: displayNameRef.current,
+      color: userColorRef.current || colorManagerRef.current.getColorForUser(userIdRef.current),
+    });
+
+    window.clearTimeout(sceneSyncTimerRef.current);
+    sceneSyncTimerRef.current = window.setTimeout(() => {
+      if (!socketRef.current?.connected) {
+        return;
+      }
+
+      if (signature === lastEmittedSceneSignatureRef.current) {
+        return;
+      }
+
+      lastEmittedSceneSignatureRef.current = signature;
+      console.log(
+        "[collab] emitting scene-update",
+        { roomId: roomIdRef.current, elementCount: nextElements.length, signature, actionCount: actions.length },
+      );
+      socketRef.current.emit("scene-update", {
+        roomId: roomIdRef.current,
+        userId: userIdRef.current,
+        displayName: displayNameRef.current,
+        timestamp: new Date().toISOString(),
+        elements: nextElements,
+        actions,
+      });
+    }, SCENE_SYNC_DEBOUNCE_MS);
+
+    if (nextElements.length > 0) {
+      queueExpressionCapture();
+    } else {
+      window.clearTimeout(expressionIdleTimerRef.current);
+    }
   };
 
   useEffect(() => {
@@ -704,106 +806,45 @@ function App() {
       if (expressionNoticeTimerRef.current) {
         window.clearTimeout(expressionNoticeTimerRef.current);
       }
+      if (sceneSyncTimerRef.current) {
+        window.clearTimeout(sceneSyncTimerRef.current);
+      }
+      if (remoteSceneTimerRef.current) {
+        window.clearTimeout(remoteSceneTimerRef.current);
+      }
+      if (sceneLoadingTimerRef.current) {
+        window.clearTimeout(sceneLoadingTimerRef.current);
+      }
     };
   }, []);
 
   useEffect(() => {
-    if (!excalidrawAPI) {
+    if (!excalidrawAPI || !pendingRemoteSceneRef.current) {
       return;
     }
 
-    const currentElements = excalidrawAPI.getSceneElements();
-    const canonicalStrokeMap = new Map();
-    sharedStrokes.forEach((stroke) => {
-      const element = createStrokeElementFromPayload(stroke);
-      if (element?.id) {
-        canonicalStrokeMap.set(element.id, element);
-      }
-    });
+    applyRemoteScene(pendingRemoteSceneRef.current);
+  }, [excalidrawAPI]);
 
-    if (canonicalStrokeMap.size === 0) {
-      return;
-    }
-
-    const nextElements = [];
-    const seenStrokeIds = new Set();
-    let didChange = false;
-
-    currentElements.forEach((currentElement) => {
-      const canonicalElement = canonicalStrokeMap.get(currentElement.id);
-      if (!canonicalElement) {
-        nextElements.push(currentElement);
-        return;
-      }
-
-      seenStrokeIds.add(currentElement.id);
-      activeStrokeElementIdsRef.current.add(currentElement.id);
-      sentStrokeVersionsRef.current.set(
-        currentElement.id,
-        Number.isFinite(canonicalElement.version) ? canonicalElement.version : 0,
-      );
-
-      const existingVersion = Number.isFinite(currentElement?.version) ? currentElement.version : 0;
-      const incomingVersion = Number.isFinite(canonicalElement?.version) ? canonicalElement.version : 0;
-      const shouldReplace =
-        incomingVersion > existingVersion ||
-        currentElement.strokeColor !== canonicalElement.strokeColor ||
-        (currentElement.roughness ?? 1) !== (canonicalElement.roughness ?? 0) ||
-        (currentElement.strokeStyle ?? "solid") !== (canonicalElement.strokeStyle ?? "solid") ||
-        (currentElement.opacity ?? 100) !== (canonicalElement.opacity ?? 100);
-
-      if (shouldReplace) {
-        nextElements.push(canonicalElement);
-        didChange = true;
-        return;
-      }
-
-      nextElements.push(currentElement);
-    });
-
-    canonicalStrokeMap.forEach((canonicalElement, strokeId) => {
-      if (seenStrokeIds.has(strokeId)) {
-        return;
-      }
-
-      activeStrokeElementIdsRef.current.add(strokeId);
-      sentStrokeVersionsRef.current.set(
-        strokeId,
-        Number.isFinite(canonicalElement.version) ? canonicalElement.version : 0,
-      );
-      nextElements.push(canonicalElement);
-      didChange = true;
-    });
-
-    if (didChange) {
-      excalidrawAPI.updateScene({
-        elements: nextElements,
-      });
-    }
-  }, [excalidrawAPI, sharedStrokes]);
-
-  // Initialize user and collaboration
   useEffect(() => {
-    let userId = localStorage.getItem("talkSketchUserId");
-    if (!userId) {
-      userId = uuidv4();
-      localStorage.setItem("talkSketchUserId", userId);
-    }
-
+    const identity = getOrCreateGuestIdentity();
     let sessionId = sessionStorage.getItem("talkSketchSessionId");
     if (!sessionId) {
       sessionId = uuidv4();
       sessionStorage.setItem("talkSketchSessionId", sessionId);
     }
 
-    userIdRef.current = userId;
+    userIdRef.current = identity.userId;
+    displayNameRef.current = identity.displayName;
+    roomIdRef.current = roomId;
     sessionIdRef.current = sessionId;
+    setDisplayName(identity.displayName);
 
-    const storedColorKey = `talkSketchUserColor:${userId}`;
+    const storedColorKey = `talkSketchUserColor:${identity.userId}`;
     const storedColor = localStorage.getItem(storedColorKey);
     const color = storedColor
-      ? colorManagerRef.current.setColorForUser(userId, storedColor)
-      : colorManagerRef.current.assignColorToUser(userId);
+      ? colorManagerRef.current.setColorForUser(identity.userId, storedColor)
+      : colorManagerRef.current.assignColorToUser(identity.userId);
 
     if (!storedColor) {
       localStorage.setItem(storedColorKey, color);
@@ -811,10 +852,38 @@ function App() {
 
     setUserColor(color);
     userColorRef.current = color;
+    setIdentityReady(true);
+  }, []);
 
-    strokeTrackerRef.current = new StrokeTracker(userId, color, null);
+  useEffect(() => {
+    roomIdRef.current = roomId;
+    setRoomInput(roomId);
+  }, [roomId]);
 
-    const socket = io({
+  useEffect(() => {
+    if (!identityReady) {
+      return;
+    }
+
+    setActiveUsers(new Map());
+    setSharedRecognitions([]);
+    setCollaborationEvents([]);
+    setExpressionNotice(null);
+    setHighlightedExpressionId("");
+    previousSceneElementsRef.current = [];
+    pendingRemoteSceneRef.current = [];
+    lastObservedSceneSignatureRef.current = "";
+    lastEmittedSceneSignatureRef.current = "";
+    latestSceneSignatureRef.current = "";
+    lastSharedExpressionSignatureRef.current = "";
+    lastBroadcastRecognitionKeyRef.current = "";
+    applyRemoteScene([]);
+
+    const userId = userIdRef.current;
+    const currentDisplayName = displayNameRef.current;
+    const sessionId = sessionIdRef.current;
+    const color = userColorRef.current || colorManagerRef.current.getColorForUser(userId);
+    const socket = io(getCollaborationServerUrl(), {
       reconnection: true,
       reconnectionDelay: 1000,
       reconnectionDelayMax: 5000,
@@ -823,27 +892,41 @@ function App() {
 
     socket.on("connect", () => {
       console.log(`Connected to collaboration server as socket ${socket.id}`);
-      socket.emit("user:join", { userId, sessionId, color });
+      socket.emit("join-room", roomId);
+      socket.emit("user:join", {
+        roomId,
+        userId,
+        displayName: currentDisplayName,
+        sessionId,
+        color,
+      });
     });
 
     socket.on("user:joined", (payload) => {
-      const { userId: newUserId, color: newColor, connectionCount } = payload;
+      const { roomId: joinedRoomId, userId: newUserId, displayName: joinedDisplayName, color: newColor, connectionCount } = payload;
+      if (joinedRoomId !== roomIdRef.current) {
+        return;
+      }
       if (newColor) {
         colorManagerRef.current.setColorForUser(newUserId, newColor);
       }
       setActiveUsers((prev) => {
         const next = new Map(prev);
         next.set(newUserId, {
+          displayName: joinedDisplayName || (newUserId === userIdRef.current ? displayNameRef.current : "Guest"),
           color: newColor || colorManagerRef.current.getColorForUser(newUserId),
           connectionCount,
         });
         return next;
       });
-      console.log(`User ${newUserId} joined with color ${newColor} (${connectionCount} connection(s))`);
+      console.log(`User ${newUserId} joined room ${joinedRoomId} with color ${newColor} (${connectionCount} connection(s))`);
     });
 
     socket.on("user:updated", (payload) => {
-      const { userId: updatedUserId, color: updatedColor, connectionCount } = payload;
+      const { roomId: updatedRoomId, userId: updatedUserId, displayName: updatedDisplayName, color: updatedColor, connectionCount } = payload;
+      if (updatedRoomId !== roomIdRef.current) {
+        return;
+      }
       if (updatedColor) {
         colorManagerRef.current.setColorForUser(updatedUserId, updatedColor);
       }
@@ -851,6 +934,7 @@ function App() {
         const next = new Map(prev);
         if (connectionCount > 0) {
           next.set(updatedUserId, {
+            displayName: updatedDisplayName || next.get(updatedUserId)?.displayName || "Guest",
             color: updatedColor || colorManagerRef.current.getColorForUser(updatedUserId),
             connectionCount,
           });
@@ -862,7 +946,10 @@ function App() {
     });
 
     socket.on("user:left", (payload) => {
-      const { userId: leftUserId } = payload;
+      const { roomId: leftRoomId, userId: leftUserId } = payload;
+      if (leftRoomId !== roomIdRef.current) {
+        return;
+      }
       setActiveUsers((prev) => {
         const next = new Map(prev);
         next.delete(leftUserId);
@@ -872,13 +959,18 @@ function App() {
     });
 
     socket.on("users:list", (payload) => {
+      if (payload?.roomId !== roomIdRef.current) {
+        return;
+      }
+
       const { users } = payload;
       const userMap = new Map();
-      users.forEach(({ userId: uId, color: c, connectionCount }) => {
+      users.forEach(({ userId: uId, displayName: name, color: c, connectionCount }) => {
         if (c) {
           colorManagerRef.current.setColorForUser(uId, c);
         }
         userMap.set(uId, {
+          displayName: name || (uId === userIdRef.current ? displayNameRef.current : "Guest"),
           color: c || colorManagerRef.current.getColorForUser(uId),
           connectionCount,
         });
@@ -886,29 +978,80 @@ function App() {
       setActiveUsers(userMap);
     });
 
-    socket.on("stroke", (payload) => {
-      if (payload.sessionId !== sessionIdRef.current) {
-        upsertSharedStroke(payload);
-        strokeTrackerRef.current?.addRemoteStroke(payload);
-      }
-    });
-
-    socket.on("strokes:sync", (payload) => {
-      if (!Array.isArray(payload?.strokes)) {
+    socket.on("scene:init", (payload) => {
+      if (payload?.roomId !== roomIdRef.current) {
         return;
       }
+      console.log("[collab] received scene:init", {
+        elementCount: Array.isArray(payload) ? payload.length : payload?.elements?.length || 0,
+      });
+      applyRemoteScene(Array.isArray(payload) ? payload : payload?.elements);
+    });
 
-      payload.strokes.forEach((stroke) => {
-        upsertSharedStroke(stroke);
+    const handleRemoteScene = (payload) => {
+      if (payload?.roomId !== roomIdRef.current) {
+        return;
+      }
+      if (payload?.userId && payload.userId === userIdRef.current) {
+        return;
+      }
+      console.log("[collab] received remote-scene", {
+        elementCount: Array.isArray(payload) ? payload.length : payload?.elements?.length || 0,
+      });
+      pendingRemoteSceneRef.current = Array.isArray(payload) ? payload : payload?.elements;
+      window.clearTimeout(remoteSceneTimerRef.current);
+      remoteSceneTimerRef.current = window.setTimeout(() => {
+        applyRemoteScene(pendingRemoteSceneRef.current);
+      }, 50);
+    };
+
+    socket.on("remote-scene", handleRemoteScene);
+    socket.on("scene:update", handleRemoteScene);
+
+    socket.on("recognition:list", (payload) => {
+      if (payload?.roomId !== roomIdRef.current || !Array.isArray(payload?.recognitions)) {
+        return;
+      }
+      payload.recognitions.forEach((recognition) => {
+        mergeRecognitionItem(recognition);
       });
     });
 
+    socket.on("recognition:created", (payload) => {
+      if (payload?.roomId !== roomIdRef.current) {
+        return;
+      }
+      mergeRecognitionItem(payload);
+    });
+
     socket.on("expression:created", (payload) => {
+      if (payload?.roomId !== roomIdRef.current) {
+        return;
+      }
       appendSharedExpression(payload, { notify: payload.sessionId !== sessionIdRef.current });
     });
 
     socket.on("expression:updated", (payload) => {
+      if (payload?.roomId !== roomIdRef.current) {
+        return;
+      }
       appendSharedExpression(payload);
+    });
+
+    socket.on("events:list", (payload) => {
+      if (payload?.roomId !== roomIdRef.current) {
+        return;
+      }
+
+      mergeCollaborationEvents(payload.events);
+    });
+
+    socket.on("events:created", (payload) => {
+      if (payload?.roomId !== roomIdRef.current) {
+        return;
+      }
+
+      mergeCollaborationEvents(payload.events);
     });
 
     socket.on("connect_error", (error) => {
@@ -921,7 +1064,7 @@ function App() {
 
     socketRef.current = socket;
 
-    fetch("/history")
+    fetch(`/history?roomId=${encodeURIComponent(roomId)}`)
       .then((response) => {
         if (!response.ok) {
           throw new Error("Unable to load shared expressions");
@@ -945,10 +1088,14 @@ function App() {
 
     return () => {
       flushPendingExpression();
-      socket.emit("user:leave", { userId, sessionId });
+      socket.emit("leave-room", roomId);
+      socket.emit("user:leave", { roomId, userId, sessionId });
       socket.disconnect();
+      if (socketRef.current === socket) {
+        socketRef.current = null;
+      }
     };
-  }, []);
+  }, [identityReady, roomId]);
 
   const recognizeScene = async ({ preserveExistingMath = false, signature = "" } = {}) => {
     if (!excalidrawAPI) return "";
@@ -1006,6 +1153,9 @@ function App() {
       if (recognitionRequestSerialRef.current === requestSerial) {
         setRecognizedMath(latex);
         setRecognitionError(!latex && !isReliable ? issueMessage : "");
+        if (latex) {
+          publishRecognizedMath(latex, cacheKey);
+        }
       }
 
       return latex;
@@ -1222,11 +1372,42 @@ function App() {
     }
   };
 
+  const joinRoom = (nextRoomId) => {
+    const normalizedRoomId = normalizeRoomId(nextRoomId);
+    navigate(buildRoomPath(normalizedRoomId));
+  };
+
+  const handleJoinRoom = () => {
+    if (!roomInput.trim()) {
+      return;
+    }
+
+    joinRoom(roomInput);
+  };
+
+  const handleCreateRoom = () => {
+    joinRoom(createRoomId());
+  };
+
+  const handleCopyRoomLink = async () => {
+    try {
+      await navigator.clipboard.writeText(roomShareUrl);
+      alert(`Room link copied:\n${roomShareUrl}`);
+    } catch (error) {
+      console.error("Unable to copy room link:", error);
+      alert(roomShareUrl);
+    }
+  };
+
+  const handleExportRoomLog = () => {
+    window.open(`/events/export?roomId=${encodeURIComponent(roomId)}&format=csv`, "_blank", "noopener,noreferrer");
+  };
+
   return (
     <div className="app-shell">
       <div className="board-area">
         <Whiteboard
-          strokeColor={SHARED_STROKE_RENDER_COLOR}
+          strokeColor={userColor || SHARED_STROKE_RENDER_COLOR}
           onApiReady={setExcalidrawAPI}
           onSceneChange={handleSceneChange}
         />
@@ -1253,6 +1434,26 @@ function App() {
         {/* Collaboration Panel */}
         <div className="collaboration-panel" style={{ marginBottom: "15px", padding: "10px", backgroundColor: "#f9f9f9", borderRadius: "5px" }}>
           <div style={{ fontSize: "12px", fontWeight: "bold", marginBottom: "8px", color: "#666" }}>Collaboration</div>
+          <div style={{ display: "grid", gap: "8px", marginBottom: "10px" }}>
+            <div style={{ fontSize: "11px", color: "#666" }}>Nickname: <strong style={{ color: "#1f2a44" }}>{displayName || "Guest"}</strong></div>
+            <div style={{ fontSize: "11px", color: "#666" }}>Room: <strong style={{ color: "#1f2a44" }}>{roomId}</strong></div>
+            <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto auto", gap: "6px" }}>
+              <input
+                className="chat-input"
+                type="text"
+                value={roomInput}
+                onChange={(event) => setRoomInput(event.target.value)}
+                placeholder="Enter room id"
+              />
+              <button className="history-btn" type="button" onClick={handleJoinRoom}>Join</button>
+              <button className="history-btn" type="button" onClick={handleCreateRoom}>New</button>
+            </div>
+            <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
+              <button className="history-btn" type="button" onClick={handleCopyRoomLink}>Copy Link</button>
+              <button className="history-btn" type="button" onClick={handleExportRoomLog}>Export Room Log</button>
+            </div>
+            <div style={{ fontSize: "10px", color: "#7b8297", wordBreak: "break-all" }}>{roomShareUrl}</div>
+          </div>
           <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "8px" }}>
             <div style={{ fontSize: "11px", color: "#666" }}>Your Color:</div>
             <div style={{
@@ -1261,6 +1462,11 @@ function App() {
               border: "1px solid #999"
             }} />
           </div>
+          {isLoadingScene ? (
+            <div style={{ fontSize: "11px", color: "#6f7b99", marginBottom: "8px" }}>
+              Syncing scene...
+            </div>
+          ) : null}
           {activeUsers.size > 0 && (
             <div style={{ fontSize: "11px" }}>
               <div style={{ marginBottom: "4px", color: "#666" }}>
@@ -1277,13 +1483,51 @@ function App() {
                       backgroundColor: user.color
                     }} />
                     <span style={{ fontSize: "10px", color: "#666" }}>
-                      {userId === userIdRef.current ? "You" : "User"} x{user.connectionCount || 1}
+                      {userId === userIdRef.current ? `You (${user.displayName || displayName})` : user.displayName || "Guest"} x{user.connectionCount || 1}
                     </span>
                   </div>
                 ))}
               </div>
             </div>
           )}
+          <div style={{ marginTop: "10px", display: "grid", gap: "6px" }}>
+            <div style={{ fontSize: "11px", fontWeight: "bold", color: "#666" }}>Recent Room Activity</div>
+            {recentCollaborationEvents.length === 0 ? (
+              <div style={{ fontSize: "11px", color: "#8a93aa" }}>No room activity yet.</div>
+            ) : (
+              recentCollaborationEvents.map((event) => (
+                <div
+                  key={event.eventId}
+                  style={{
+                    display: "grid",
+                    gap: "3px",
+                    padding: "8px",
+                    borderRadius: "8px",
+                    backgroundColor: "#fff",
+                    border: "1px solid #e2e7f5",
+                  }}
+                  title={`${event.displayName || event.userId} • ${new Date(event.timestamp).toLocaleString()}`}
+                >
+                  <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                    <span
+                      style={{
+                        width: "10px",
+                        height: "10px",
+                        borderRadius: "999px",
+                        backgroundColor: event.metadata?.color || "#c7d2ec",
+                      }}
+                    />
+                    <span style={{ fontSize: "11px", color: "#1f2a44", fontWeight: 600 }}>
+                      {formatRoomEventLabel(event, userIdRef.current)}
+                    </span>
+                  </div>
+                  <div style={{ fontSize: "10px", color: "#7b8297" }}>
+                    {new Date(event.timestamp).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
         </div>
 
         <div className="recognition-card">
@@ -1301,6 +1545,33 @@ function App() {
               </div>
             ) : null}
             {!isRecognizingMath && !recognitionError && !recognizedMath ? "Write math on the board to recognize." : null}
+            {visibleRecognitions.length > 0 ? (
+              <div className="recognition-feed">
+                <div className="recognition-feed-title">Shared Live Recognitions</div>
+                <div className="recognition-feed-list">
+                  {visibleRecognitions.map((recognition) => (
+                    <div className="recognition-feed-item" key={recognition.recognitionId}>
+                      <div className="recognition-feed-meta">
+                        <span
+                          className="shared-expression-badge"
+                          style={{ backgroundColor: recognition.color || "#d8deeb" }}
+                        />
+                        <span>{recognitionCreatorLabel(recognition, userIdRef.current)}</span>
+                        <span>
+                          {new Date(recognition.timestamp || Date.now()).toLocaleTimeString([], {
+                            hour: "numeric",
+                            minute: "2-digit",
+                          })}
+                        </span>
+                      </div>
+                      <div className="recognition-feed-latex">
+                        {formatRecognizedMathPreview(recognition.latex) || recognition.latex}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
           </div>
           {recognizedMath ? (
             <div className="recognition-actions">
@@ -1379,16 +1650,16 @@ function App() {
         {showHistory && (
           <div className="chat-history-panel">
             <div className="history-header">
-              <h3>History ({historyItems.length} items)</h3>
+              <h3>History ({visibleHistoryItems.length} items)</h3>
               <button className="close-btn" onClick={() => setShowHistory(false)}>
                 ×
               </button>
             </div>
             <div className="history-container">
-              {historyItems.length === 0 ? (
+              {visibleHistoryItems.length === 0 ? (
                 <p className="empty-message">No history yet</p>
               ) : (
-                historyItems.map((item) => (
+                visibleHistoryItems.map((item) => (
                   <div
                     key={item.id}
                     className={`history-item history-item-${item.type === "chat" ? item.content?.role || "assistant" : "expression"}`}

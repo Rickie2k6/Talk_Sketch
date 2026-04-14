@@ -43,13 +43,14 @@ export default defineConfig({
   },
 
   server: {
-    host: process.env.VITE_HOST || "127.0.0.1",
+    host: process.env.VITE_HOST || "0.0.0.0",
     port: process.env.VITE_PORT ? Number(process.env.VITE_PORT) : undefined,
     strictPort: false,
     proxy: {
       "/analyze-sketch": backendTarget,
       "/recognize-math": backendTarget,
       "/history": backendTarget,
+      "/events": backendTarget,
       "/users/active": backendTarget,
       "/socket.io": {
         target: backendTarget,

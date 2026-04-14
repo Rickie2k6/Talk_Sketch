@@ -3,7 +3,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DEV_HOST="${VITE_HOST:-127.0.0.1}"
+DEV_HOST="${VITE_HOST:-0.0.0.0}"
 
 cd "${ROOT_DIR}"
 
