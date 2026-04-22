@@ -3,7 +3,6 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PORT_FILE="${ROOT_DIR}/.backend-port"
 SERVER_HOST="${HOST:-0.0.0.0}"
 MIN_PORT=8080
 MAX_PORT=8900
@@ -64,7 +63,6 @@ fi
 
 export HOST="${SERVER_HOST}"
 export PORT="${SERVER_PORT}"
-printf "%s\n" "${SERVER_PORT}" > "${PORT_FILE}"
 
 if [[ -z "${COMER_PYTHON_BIN:-}" && -z "${PIX2TEXT_PYTHON_BIN:-}" && -z "${MATH_OCR_PYTHON_BIN:-}" ]] && command -v conda >/dev/null 2>&1; then
   CONDA_BASE="$(conda info --base 2>/dev/null || true)"

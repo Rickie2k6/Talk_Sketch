@@ -1,188 +1,496 @@
 import { Server } from "socket.io";
 import { v4 as uuidv4 } from "uuid";
+import { sanitizeCollaborativeAppState } from "../../shared/excalidrawCollaboration.js";
+
+const DEFAULT_ROOM_ID = "lobby";
+const EVENT_LOG_LIMIT = 500;
+const RECOGNITION_LIMIT = 24;
+const DEBUG_COLLAB_FLOW = process.env.COLLAB_DEBUG_FLOW === "1";
+
+function summarizeElements(elements) {
+  return (Array.isArray(elements) ? elements : []).map((element) => ({
+    id: element?.id || null,
+    type: element?.type || null,
+    version: Number.isFinite(element?.version) ? element.version : null,
+    isDeleted: Boolean(element?.isDeleted),
+    width: Number.isFinite(element?.width) ? element.width : null,
+    height: Number.isFinite(element?.height) ? element.height : null,
+    points: Array.isArray(element?.points) ? element.points.length : null,
+    lastPoint: Array.isArray(element?.points) && element.points.length > 0
+      ? element.points[element.points.length - 1]
+      : null,
+  }));
+}
+
+function summarizeDrawingFocus(elements) {
+  const linearElements = (Array.isArray(elements) ? elements : []).filter((element) => (
+    element?.type === "line" ||
+    element?.type === "arrow" ||
+    element?.type === "freedraw" ||
+    element?.type === "draw"
+  ));
+  const latestLinearElement = linearElements[linearElements.length - 1] || null;
+
+  return {
+    totalElements: Array.isArray(elements) ? elements.length : 0,
+    linearElementCount: linearElements.length,
+    latestLinearElement: latestLinearElement
+      ? {
+        id: latestLinearElement?.id || null,
+        type: latestLinearElement?.type || null,
+        version: Number.isFinite(latestLinearElement?.version) ? latestLinearElement.version : null,
+        width: Number.isFinite(latestLinearElement?.width) ? latestLinearElement.width : null,
+        height: Number.isFinite(latestLinearElement?.height) ? latestLinearElement.height : null,
+        points: Array.isArray(latestLinearElement?.points) ? latestLinearElement.points.length : null,
+        firstPoint: Array.isArray(latestLinearElement?.points) && latestLinearElement.points.length > 0
+          ? latestLinearElement.points[0]
+          : null,
+        lastPoint: Array.isArray(latestLinearElement?.points) && latestLinearElement.points.length > 0
+          ? latestLinearElement.points[latestLinearElement.points.length - 1]
+          : null,
+      }
+      : null,
+  };
+}
+
+function summarizeScenePacket(scene = {}, extras = {}) {
+  const elements = Array.isArray(scene?.elements) ? scene.elements : [];
+  const files = scene?.files && typeof scene.files === "object" ? scene.files : {};
+
+  return {
+    roomId: extras.roomId || scene?.roomId || null,
+    senderId: extras.senderId || scene?.senderId || null,
+    version: Number.isFinite(extras.version) ? extras.version : (
+      Number.isFinite(scene?.version) ? scene.version : null
+    ),
+    fileCount: Object.keys(files).length,
+    drawFocus: summarizeDrawingFocus(elements),
+    elements: summarizeElements(elements),
+    appState: sanitizeCollaborativeAppState(scene?.appState) || {},
+  };
+}
+
+function debugCollabFlow(event, payload) {
+  if (!DEBUG_COLLAB_FLOW) {
+    return;
+  }
+
+  console.log(`[collab-debug] ${new Date().toISOString()} ${event}`, payload);
+}
 
 class CollaborationServer {
   constructor(httpServer) {
     this.io = new Server(httpServer, {
       cors: { origin: "*", methods: ["GET", "POST"] },
     });
-    this.users = new Map();
-    this.socketToUser = new Map();
-    this.strokes = new Map();
-    this.expressions = [];
+    this.rooms = new Map();
+    this.socketLinks = new Map();
     this.setupSocketHandlers();
   }
 
-  getActiveUsersPayload() {
-    return Array.from(this.users.entries()).map(([userId, data]) => ({
+  normalizeRoomId(roomId) {
+    const candidate = typeof roomId === "string" ? roomId.trim() : "";
+    if (!candidate) {
+      return DEFAULT_ROOM_ID;
+    }
+
+    return candidate
+      .toLowerCase()
+      .replace(/[^a-z0-9-_]/g, "-")
+      .replace(/-{2,}/g, "-")
+      .replace(/^-|-$/g, "") || DEFAULT_ROOM_ID;
+  }
+
+  normalizeTimestamp(value) {
+    const date = typeof value === "string" || typeof value === "number" ? new Date(value) : new Date();
+    if (Number.isNaN(date.getTime())) {
+      return new Date().toISOString();
+    }
+    return date.toISOString();
+  }
+
+  cloneSerializable(value, fallback) {
+    if (value == null) {
+      return fallback;
+    }
+
+    try {
+      return JSON.parse(JSON.stringify(value));
+    } catch {
+      return fallback;
+    }
+  }
+
+  sanitizeScene(scene = {}) {
+    return {
+      elements: Array.isArray(scene?.elements) ? this.cloneSerializable(scene.elements, []) : [],
+      appState: sanitizeCollaborativeAppState(scene?.appState) || {},
+      files: scene?.files && typeof scene.files === "object"
+        ? this.cloneSerializable(scene.files, {})
+        : {},
+    };
+  }
+
+  getRoomState(roomId) {
+    const normalizedRoomId = this.normalizeRoomId(roomId);
+    if (!this.rooms.has(normalizedRoomId)) {
+      this.rooms.set(normalizedRoomId, {
+        roomId: normalizedRoomId,
+        elements: [],
+        appState: {},
+        files: {},
+        version: 0,
+        expressions: [],
+        recognitions: [],
+        activeUsers: new Map(),
+        eventLog: [],
+      });
+    }
+
+    return this.rooms.get(normalizedRoomId);
+  }
+
+  buildScenePayload(room) {
+    return {
+      elements: this.cloneSerializable(room.elements, []),
+      appState: this.cloneSerializable(room.appState, {}),
+      files: this.cloneSerializable(room.files, {}),
+      version: room.version,
+    };
+  }
+
+  getRoomUsersPayload(roomId) {
+    const room = this.getRoomState(roomId);
+    return Array.from(room.activeUsers.entries()).map(([userId, user]) => ({
+      roomId: room.roomId,
       userId,
-      color: data.color,
-      joinedAt: data.joinedAt,
-      connectionCount: data.socketIds.size,
-      socketIds: Array.from(data.socketIds),
-      sessionIds: Array.from(data.sessionIds),
+      displayName: user.displayName,
+      color: user.color,
+      joinedAt: user.joinedAt,
+      connectionCount: user.socketIds.size,
+      socketIds: Array.from(user.socketIds),
+      sessionIds: Array.from(user.sessionIds),
     }));
   }
 
-  registerSocket(userId, socket, sessionId, color) {
-    const existing = this.users.get(userId);
-    const user = existing || {
-      color: typeof color === "string" && color.trim() ? color.trim() : null,
+  emitUsersList(roomId) {
+    this.io.to(roomId).emit("users:list", {
+      roomId,
+      users: this.getRoomUsersPayload(roomId),
+    });
+  }
+
+  appendEvent(room, actionType, socket, metadata = {}) {
+    const record = {
+      eventId: uuidv4(),
+      roomId: room.roomId,
+      userId: socket?.data?.userId || null,
+      displayName: socket?.data?.displayName || "Guest",
+      actionType,
+      strokeId: null,
+      timestamp: new Date().toISOString(),
+      metadata: this.cloneSerializable(metadata, {}),
+    };
+
+    room.eventLog = [...room.eventLog, record].slice(-EVENT_LOG_LIMIT);
+    this.io.to(room.roomId).emit("events:created", {
+      roomId: room.roomId,
+      events: [record],
+    });
+  }
+
+  registerSocket(socket, payload = {}) {
+    const roomId = this.normalizeRoomId(payload.roomId);
+    const room = this.getRoomState(roomId);
+    const userId = typeof payload.userId === "string" && payload.userId.trim()
+      ? payload.userId.trim()
+      : `guest_${uuidv4()}`;
+    const displayName = typeof payload.displayName === "string" && payload.displayName.trim()
+      ? payload.displayName.trim()
+      : "Guest";
+    const color = typeof payload.color === "string" && payload.color.trim()
+      ? payload.color.trim()
+      : null;
+    const sessionId = typeof payload.sessionId === "string" && payload.sessionId.trim()
+      ? payload.sessionId.trim()
+      : socket.id;
+
+    const existing = room.activeUsers.get(userId) || {
+      displayName,
+      color,
       joinedAt: Date.now(),
       socketIds: new Set(),
       sessionIds: new Set(),
     };
 
-    if (typeof color === "string" && color.trim()) {
-      user.color = color.trim();
-    }
+    existing.displayName = displayName;
+    existing.color = color;
+    existing.socketIds.add(socket.id);
+    existing.sessionIds.add(sessionId);
+    room.activeUsers.set(userId, existing);
 
-    user.socketIds.add(socket.id);
-    if (sessionId) {
-      user.sessionIds.add(sessionId);
-    }
+    this.socketLinks.set(socket.id, {
+      roomId: room.roomId,
+      userId,
+      sessionId,
+    });
 
-    this.users.set(userId, user);
-    this.socketToUser.set(socket.id, { userId, sessionId: sessionId || null });
+    socket.join(room.roomId);
+    socket.data.roomId = room.roomId;
     socket.data.userId = userId;
-    socket.data.sessionId = sessionId || null;
+    socket.data.sessionId = sessionId;
+    socket.data.displayName = displayName;
+    socket.data.color = color;
 
-    return user;
+    return { room, userId, user: existing };
   }
 
   unregisterSocket(socket) {
-    const link = this.socketToUser.get(socket.id);
+    const link = this.socketLinks.get(socket.id);
     if (!link) {
       return null;
     }
 
-    const user = this.users.get(link.userId);
-    this.socketToUser.delete(socket.id);
+    this.socketLinks.delete(socket.id);
+    const room = this.rooms.get(link.roomId);
+    if (!room) {
+      return null;
+    }
 
+    const user = room.activeUsers.get(link.userId);
     if (!user) {
-      return { userId: link.userId, userRemoved: false, remainingConnections: 0 };
+      return {
+        roomId: room.roomId,
+        userId: link.userId,
+        displayName: socket.data.displayName || "Guest",
+      };
     }
 
     user.socketIds.delete(socket.id);
-    if (link.sessionId) {
-      user.sessionIds.delete(link.sessionId);
+    user.sessionIds.delete(link.sessionId);
+
+    if (user.socketIds.size === 0) {
+      room.activeUsers.delete(link.userId);
     }
 
-    const remainingConnections = user.socketIds.size;
-    if (remainingConnections === 0) {
-      this.users.delete(link.userId);
-      return { userId: link.userId, userRemoved: true, remainingConnections: 0 };
-    }
-
-    return { userId: link.userId, userRemoved: false, remainingConnections };
+    return {
+      roomId: room.roomId,
+      userId: link.userId,
+      displayName: user.displayName,
+      color: user.color,
+    };
   }
 
   setupSocketHandlers() {
     this.io.on("connection", (socket) => {
       console.log(`Connected socket ${socket.id}`);
 
-      socket.on("user:join", (payload = {}) => {
-        const incomingUserId = typeof payload.userId === "string" && payload.userId.trim()
-          ? payload.userId.trim()
-          : uuidv4();
-        const sessionId = typeof payload.sessionId === "string" && payload.sessionId.trim()
-          ? payload.sessionId.trim()
-          : socket.id;
-        const color = typeof payload.color === "string" && payload.color.trim()
-          ? payload.color.trim()
-          : null;
+      socket.on("join-room", (payload = {}) => {
+        const nextPayload = typeof payload === "string"
+          ? { roomId: payload }
+          : payload;
+        const user = nextPayload?.user && typeof nextPayload.user === "object"
+          ? nextPayload.user
+          : nextPayload;
+        const existing = this.socketLinks.get(socket.id);
 
-        const user = this.registerSocket(incomingUserId, socket, sessionId, color);
-        const activeUsers = this.getActiveUsersPayload();
+        if (existing?.roomId) {
+          socket.leave(existing.roomId);
+          this.unregisterSocket(socket);
+        }
 
-        socket.emit("users:list", { users: activeUsers });
-        socket.emit("strokes:sync", { strokes: Array.from(this.strokes.values()) });
-        this.io.emit("user:joined", {
-          userId: incomingUserId,
-          color: user.color,
-          socketId: socket.id,
-          sessionId,
-          connectionCount: user.socketIds.size,
+        const { room, userId, user: userEntry } = this.registerSocket(socket, {
+          roomId: nextPayload.roomId,
+          userId: user?.id || user?.userId,
+          displayName: user?.name || user?.displayName,
+          color: user?.color,
+          sessionId: user?.sessionId,
         });
 
-        console.log(
-          `User ${incomingUserId} connected on socket ${socket.id} (${user.socketIds.size} active connection(s))`,
-        );
+        socket.emit("scene-init", {
+          roomId: room.roomId,
+          scene: this.buildScenePayload(room),
+        });
+        socket.emit("recognition:list", {
+          roomId: room.roomId,
+          recognitions: room.recognitions,
+        });
+        socket.emit("events:list", {
+          roomId: room.roomId,
+          events: room.eventLog,
+        });
+        this.emitUsersList(room.roomId);
+        socket.to(room.roomId).emit("presence-update", {
+          type: "join",
+          roomId: room.roomId,
+          socketId: socket.id,
+          user: {
+            id: userId,
+            name: userEntry.displayName,
+            color: userEntry.color,
+          },
+        });
+        this.appendEvent(room, "join", socket, {
+          socketId: socket.id,
+        });
+        debugCollabFlow("socket.join-room", {
+          socketId: socket.id,
+          roomId: room.roomId,
+          userId,
+          version: room.version,
+          scene: summarizeScenePacket(this.buildScenePayload(room), {
+            roomId: room.roomId,
+            version: room.version,
+          }),
+        });
+
+        console.log(`User ${userId} joined room ${room.roomId} on socket ${socket.id}`);
       });
 
-      const handleStroke = (payload = {}) => {
-        const userId = socket.data.userId || payload.userId;
-        const userData = userId ? this.users.get(userId) : null;
-        if (!userId || !userData) {
+      const handleSceneUpdate = (payload = {}) => {
+        const link = this.socketLinks.get(socket.id);
+        if (!link) {
           return;
         }
 
-        const strokeId = typeof payload.strokeId === "string" && payload.strokeId.trim()
-          ? payload.strokeId.trim()
-          : uuidv4();
-        const timestamp = Number.isFinite(payload.timestamp) ? payload.timestamp : Date.now();
-        const stroke = {
-          ...payload,
-          strokeId,
-          userId,
-          color: typeof payload.color === "string" && payload.color.trim()
-            ? payload.color.trim()
-            : userData.color,
-          timestamp,
-          version: Number.isFinite(payload.version) ? payload.version : 1,
+        const room = this.getRoomState(link.roomId);
+        const incomingScene = this.sanitizeScene(payload?.scene || payload);
+        const clientVersion = Number.isFinite(payload?.scene?.version)
+          ? payload.scene.version
+          : Number.isFinite(payload?.version)
+            ? payload.version
+            : null;
+
+        if (clientVersion != null && clientVersion < room.version) {
+          debugCollabFlow("socket.scene-update.skip-stale", {
+            socketId: socket.id,
+            roomId: room.roomId,
+            clientVersion,
+            roomVersion: room.version,
+            incomingScene: summarizeScenePacket(incomingScene, {
+              roomId: room.roomId,
+              senderId: socket.id,
+              version: clientVersion,
+            }),
+            canonicalScene: summarizeScenePacket(this.buildScenePayload(room), {
+              roomId: room.roomId,
+              version: room.version,
+            }),
+          });
+          socket.emit("scene-init", {
+            roomId: room.roomId,
+            scene: this.buildScenePayload(room),
+          });
+          return;
+        }
+
+        room.elements = incomingScene.elements;
+        room.appState = incomingScene.appState;
+        room.files = incomingScene.files;
+        room.version += 1;
+
+        const scene = this.buildScenePayload(room);
+        debugCollabFlow("socket.scene-update.accepted", {
           socketId: socket.id,
+          roomId: room.roomId,
+          nextVersion: room.version,
+          incomingScene: summarizeScenePacket(incomingScene, {
+            roomId: room.roomId,
+            senderId: socket.id,
+            version: clientVersion,
+          }),
+          canonicalScene: summarizeScenePacket(scene, {
+            roomId: room.roomId,
+            senderId: socket.id,
+            version: room.version,
+          }),
+        });
+        this.appendEvent(room, "scene-update", socket, {
+          version: room.version,
+          elementCount: room.elements.length,
+        });
+
+        this.io.to(room.roomId).emit("scene-update", {
+          roomId: room.roomId,
+          scene,
+          senderId: socket.id,
+        });
+      };
+
+      socket.on("scene-update", handleSceneUpdate);
+      socket.on("scene:update", handleSceneUpdate);
+
+      socket.on("recognition:created", (payload = {}) => {
+        const roomId = this.normalizeRoomId(socket.data.roomId || payload.roomId);
+        const room = this.getRoomState(roomId);
+        const latex = typeof payload.latex === "string" ? payload.latex.trim() : "";
+
+        if (!latex) {
+          return;
+        }
+
+        const recognitionId = typeof payload.recognitionId === "string" && payload.recognitionId.trim()
+          ? payload.recognitionId.trim()
+          : `${roomId}:${socket.data.userId || socket.id}:${Date.now()}`;
+
+        const recognition = {
+          recognitionId,
+          roomId,
+          userId: socket.data.userId || payload.userId || socket.id,
+          displayName: socket.data.displayName || payload.displayName || "Guest",
+          color: socket.data.color || payload.color || null,
+          latex,
+          timestamp: this.normalizeTimestamp(payload.timestamp),
+          sceneSignature: typeof payload.sceneSignature === "string" ? payload.sceneSignature : "",
           sessionId: socket.data.sessionId || null,
         };
 
-        const existing = this.strokes.get(strokeId);
-        const existingVersion = Number.isFinite(existing?.version) ? existing.version : 0;
-        if (existing && stroke.version < existingVersion) {
-          return;
+        const existingIndex = room.recognitions.findIndex((entry) => entry.recognitionId === recognitionId);
+        if (existingIndex === -1) {
+          room.recognitions.push(recognition);
+        } else {
+          room.recognitions[existingIndex] = recognition;
         }
 
-        this.strokes.set(strokeId, stroke);
-        this.io.emit("stroke", stroke);
-        console.log(`Broadcast stroke ${strokeId} from ${userId} on socket ${socket.id}`);
-      };
+        room.recognitions = room.recognitions
+          .sort((left, right) => new Date(left.timestamp).getTime() - new Date(right.timestamp).getTime())
+          .slice(-RECOGNITION_LIMIT);
 
-      socket.on("stroke", handleStroke);
-      socket.on("stroke:created", handleStroke);
+        this.io.to(roomId).emit("recognition:created", recognition);
+      });
 
       socket.on("expression:created", (payload = {}) => {
-        const userId = socket.data.userId || payload.userId;
-        const userData = userId ? this.users.get(userId) : null;
-        if (!userId || !userData) {
-          return;
-        }
-
+        const roomId = this.normalizeRoomId(socket.data.roomId || payload.roomId);
+        const room = this.getRoomState(roomId);
         const expressionId = typeof payload.expressionId === "string" && payload.expressionId.trim()
           ? payload.expressionId.trim()
           : uuidv4();
 
-        if (this.expressions.some((expression) => expression.expressionId === expressionId)) {
+        if (room.expressions.some((expression) => expression.expressionId === expressionId)) {
           return;
         }
 
         const expression = {
           expressionId,
-          strokes: Array.isArray(payload.strokes) ? payload.strokes : [],
-          elements: Array.isArray(payload.elements) ? payload.elements : [],
+          roomId,
+          strokes: Array.isArray(payload.strokes) ? this.cloneSerializable(payload.strokes, []) : [],
+          elements: Array.isArray(payload.elements) ? this.cloneSerializable(payload.elements, []) : [],
           previewUrl: typeof payload.previewUrl === "string" ? payload.previewUrl : "",
-          userId,
-          color: typeof payload.color === "string" && payload.color.trim()
-            ? payload.color.trim()
-            : userData.color,
-          timestamp: Number.isFinite(payload.timestamp) ? payload.timestamp : Date.now(),
+          userId: socket.data.userId || payload.userId || socket.id,
+          displayName: socket.data.displayName || payload.displayName || "Guest",
+          color: socket.data.color || payload.color || null,
+          timestamp: this.normalizeTimestamp(payload.timestamp),
           sessionId: socket.data.sessionId || null,
           recognizedText: typeof payload.recognizedText === "string" ? payload.recognizedText : "",
         };
 
-        this.expressions.push(expression);
-        this.io.emit("expression:created", expression);
-        console.log(`Broadcast expression ${expressionId} from ${userId} (${expression.elements.length} element(s))`);
+        room.expressions.push(expression);
+        this.io.to(roomId).emit("expression:created", expression);
       });
 
       socket.on("expression:updated", (payload = {}) => {
+        const roomId = this.normalizeRoomId(socket.data.roomId || payload.roomId);
+        const room = this.getRoomState(roomId);
         const expressionId = typeof payload.expressionId === "string" && payload.expressionId.trim()
           ? payload.expressionId.trim()
           : null;
@@ -191,88 +499,72 @@ class CollaborationServer {
           return;
         }
 
-        const index = this.expressions.findIndex((expression) => expression.expressionId === expressionId);
+        const index = room.expressions.findIndex((expression) => expression.expressionId === expressionId);
         if (index === -1) {
           return;
         }
 
-        const current = this.expressions[index];
-        const updatedExpression = {
+        const current = room.expressions[index];
+        room.expressions[index] = {
           ...current,
-          elements: Array.isArray(payload.elements) ? payload.elements : current.elements,
+          elements: Array.isArray(payload.elements) ? this.cloneSerializable(payload.elements, current.elements) : current.elements,
           previewUrl: typeof payload.previewUrl === "string" ? payload.previewUrl : current.previewUrl,
           recognizedText: typeof payload.recognizedText === "string" ? payload.recognizedText : current.recognizedText,
-          strokes: Array.isArray(payload.strokes) ? payload.strokes : current.strokes,
+          strokes: Array.isArray(payload.strokes) ? this.cloneSerializable(payload.strokes, current.strokes) : current.strokes,
         };
 
-        this.expressions[index] = updatedExpression;
-        this.io.emit("expression:updated", updatedExpression);
+        this.io.to(roomId).emit("expression:updated", room.expressions[index]);
       });
 
-      socket.on("user:leave", () => {
+      const handleDisconnect = () => {
         const result = this.unregisterSocket(socket);
         if (!result) {
           return;
         }
 
-        if (result.userRemoved) {
-          this.io.emit("user:left", { userId: result.userId });
-          console.log(`User ${result.userId} left (last socket closed)`);
-          return;
-        }
+        const room = this.getRoomState(result.roomId);
+        this.emitUsersList(result.roomId);
+        socket.to(result.roomId).emit("presence-update", {
+          type: "leave",
+          roomId: result.roomId,
+          socketId: socket.id,
+          user: {
+            id: result.userId,
+            name: result.displayName,
+            color: result.color,
+          },
+        });
+        this.appendEvent(room, "leave", socket, {
+          socketId: socket.id,
+        });
+      };
 
-        const user = this.users.get(result.userId);
-        if (user) {
-          this.io.emit("user:updated", {
-            userId: result.userId,
-            color: user.color,
-            connectionCount: result.remainingConnections,
-          });
-        }
-
-        console.log(
-          `Socket ${socket.id} left user ${result.userId}; ${result.remainingConnections} connection(s) remain`,
-        );
-      });
-
-      socket.on("disconnect", () => {
-        const result = this.unregisterSocket(socket);
-        if (!result) {
-          return;
-        }
-
-        if (result.userRemoved) {
-          this.io.emit("user:left", { userId: result.userId });
-          console.log(`User ${result.userId} disconnected (no sockets remaining)`);
-          return;
-        }
-
-        const user = this.users.get(result.userId);
-        if (user) {
-          this.io.emit("user:updated", {
-            userId: result.userId,
-            color: user.color,
-            connectionCount: result.remainingConnections,
-          });
-        }
-
-        console.log(
-          `Socket ${socket.id} disconnected for user ${result.userId}; ${result.remainingConnections} connection(s) remain`,
-        );
-      });
+      socket.on("leave-room", handleDisconnect);
+      socket.on("disconnect", handleDisconnect);
     });
   }
 
-  getHistory() {
-    return this.expressions;
+  getHistory(roomId = DEFAULT_ROOM_ID) {
+    return this.getRoomState(roomId).expressions;
   }
 
-  clearHistory() {
-    this.expressions = [];
+  clearHistory(roomId = DEFAULT_ROOM_ID) {
+    const room = this.getRoomState(roomId);
+    room.expressions = [];
+    room.recognitions = [];
+    room.eventLog = [];
+    room.elements = [];
+    room.appState = {};
+    room.files = {};
+    room.version = 0;
   }
 
-  getActiveUsers() {
-    return this.getActiveUsersPayload();
+  getActiveUsers(roomId = DEFAULT_ROOM_ID) {
+    return this.getRoomUsersPayload(roomId);
+  }
+
+  getEventLog(roomId = DEFAULT_ROOM_ID) {
+    return this.getRoomState(roomId).eventLog;
   }
 }
 

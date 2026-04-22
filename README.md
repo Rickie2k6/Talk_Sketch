@@ -37,7 +37,7 @@ npm run dev:backend
 
 - The backend binds to `0.0.0.0`.
 - It uses port `8080` by default.
-- If `8080` is busy and you did not set `PORT`, the startup script automatically chooses the next free port in `8080-8900` and writes it to `backend/.backend-port`.
+- If you want a different port, start it with `PORT=<port> npm run dev:backend`.
 
 Terminal 2, frontend:
 
@@ -46,9 +46,10 @@ npm run dev:frontend
 ```
 
 - The frontend uses Vite's normal dev port behavior.
+- The frontend binds to `0.0.0.0` by default, so Vite prints a network URL you can open from other devices on the same network.
 - By default it starts on `5173`.
 - If that port is busy, Vite chooses another open dev port automatically.
-- The Vite proxy reads `backend/.backend-port`, so start the backend first.
+- In development, the Vite proxy targets `http://127.0.0.1:8080` by default.
 
 Open the frontend URL shown by Vite in the terminal.
 

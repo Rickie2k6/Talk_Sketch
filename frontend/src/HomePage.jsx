@@ -46,6 +46,8 @@ export default function HomePage() {
           </p>
         </div>
         <input
+          id="home-room-name-input"
+          name="roomName"
           type="text"
           value={roomName}
           onChange={(event) => setRoomName(event.target.value)}

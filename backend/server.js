@@ -29,11 +29,51 @@ let ocrWorkerPromise = null;
 let ocrWorker = null;
 const recognitionCache = new Map();
 
+function getRequestedRoomId(req) {
+  const value = typeof req.query?.roomId === "string" ? req.query.roomId.trim() : "";
+  return value || "lobby";
+}
+
+function escapeCsvValue(value) {
+  const normalized = value == null ? "" : String(value);
+  if (/[",\n]/.test(normalized)) {
+    return `"${normalized.replace(/"/g, "\"\"")}"`;
+  }
+  return normalized;
+}
+
+function toCsv(rows) {
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return "";
+  }
+
+  const headers = Object.keys(rows[0]);
+  const lines = [
+    headers.map((header) => escapeCsvValue(header)).join(","),
+    ...rows.map((row) => headers.map((header) => escapeCsvValue(row[header])).join(",")),
+  ];
+
+  return lines.join("\n");
+}
+
 if (!Number.isInteger(PORT) || PORT < MIN_PORT || PORT > MAX_PORT) {
   throw new Error(`PORT must be an integer between ${MIN_PORT} and ${MAX_PORT}. Received: ${process.env.PORT || PORT}`);
 }
 
 app.use(express.json({ limit: "10mb" }));
+app.use((req, res, next) => {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+
+  if (req.method === "OPTIONS") {
+    res.status(204).end();
+    return;
+  }
+
+  next();
+});
+
 app.use((req, res, next) => {
   res.setHeader(
     "Content-Security-Policy",
@@ -384,14 +424,15 @@ if (process.env.NODE_ENV === "production") {
   });
 }
 
-// Initialize Collaboration Server with HTTP server
 const httpServer = createServer(app);
 const collaborationServer = new CollaborationServer(httpServer);
 
 // Add history API endpoint
-app.get("/history", (_req, res) => {
-  const history = collaborationServer.getHistory();
+app.get("/history", (req, res) => {
+  const roomId = getRequestedRoomId(req);
+  const history = collaborationServer.getHistory(roomId);
   res.json({
+    roomId,
     expressions: history,
     count: history.length,
     timestamp: Date.now(),
@@ -399,22 +440,65 @@ app.get("/history", (_req, res) => {
 });
 
 // Add active users endpoint
-app.get("/users/active", (_req, res) => {
-  const users = collaborationServer.getActiveUsers();
+app.get("/users/active", (req, res) => {
+  const roomId = getRequestedRoomId(req);
+  const users = collaborationServer.getActiveUsers(roomId);
   res.json({
+    roomId,
     users,
     count: users.length,
     timestamp: Date.now(),
   });
 });
 
+app.get("/events", (req, res) => {
+  const roomId = getRequestedRoomId(req);
+  const events = collaborationServer.getEventLog(roomId);
+  res.json({
+    roomId,
+    events,
+    count: events.length,
+    timestamp: Date.now(),
+  });
+});
+
+app.get("/events/export", (req, res) => {
+  const roomId = getRequestedRoomId(req);
+  const format = typeof req.query?.format === "string" ? req.query.format.trim().toLowerCase() : "json";
+  const events = collaborationServer.getEventLog(roomId);
+
+  if (format === "csv") {
+    const rows = events.map((event) => ({
+      eventId: event.eventId,
+      roomId: event.roomId,
+      userId: event.userId,
+      displayName: event.displayName,
+      actionType: event.actionType,
+      strokeId: event.strokeId || "",
+      timestamp: event.timestamp,
+      metadata: JSON.stringify(event.metadata || {}),
+    }));
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="${roomId}-events.csv"`);
+    res.send(toCsv(rows));
+    return;
+  }
+
+  res.json({
+    roomId,
+    events,
+    count: events.length,
+    timestamp: Date.now(),
+  });
+});
+
 // Clear history endpoint (optional)
-app.post("/history/clear", (_req, res) => {
-  collaborationServer.clearHistory();
-  res.json({ message: "History cleared", timestamp: Date.now() });
+app.post("/history/clear", (req, res) => {
+  const roomId = getRequestedRoomId(req);
+  collaborationServer.clearHistory(roomId);
+  res.json({ roomId, message: "History cleared", timestamp: Date.now() });
 });
 
 httpServer.listen(PORT, HOST, () => {
   console.log(`Talk Sketch backend listening on http://${HOST}:${PORT}`);
-  console.log(`WebSocket collaboration server active`);
 });

@@ -35,22 +35,23 @@ class FatalErrorBoundary extends React.Component {
       >
         <h1 style={{ marginTop: 0, fontSize: "22px" }}>Talk Sketch failed to load</h1>
         <p style={{ maxWidth: "720px", lineHeight: 1.5 }}>
-          The app hit a browser-side error before it could render. The details are shown below so we can debug
-          the exact issue.
+          The app hit a browser-side error before it could render. Check the browser console for details and reload
+          the page after the latest frontend restart.
         </p>
-        <pre
+        <button
+          type="button"
+          onClick={() => window.location.reload()}
           style={{
-            whiteSpace: "pre-wrap",
-            wordBreak: "break-word",
+            padding: "10px 14px",
+            borderRadius: "10px",
+            border: "1px solid #c7d2ea",
             background: "#fff",
-            border: "1px solid #d7def0",
-            borderRadius: "12px",
-            padding: "16px",
-            overflow: "auto",
+            color: "#1f2a44",
+            cursor: "pointer",
           }}
         >
-          {this.state.error?.stack || this.state.error?.message || String(this.state.error)}
-        </pre>
+          Reload App
+        </button>
       </div>
     );
   }
@@ -67,15 +68,13 @@ window.addEventListener("unhandledrejection", (event) => {
 });
 
 ReactDOM.createRoot(rootElement).render(
-  <React.StrictMode>
-    <FatalErrorBoundary>
-      <BrowserRouter>
-        <Routes>
-          <Route path="/" element={<HomePage />} />
-          <Route path="/room/:roomId" element={<App />} />
-          <Route path="*" element={<HomePage />} />
-        </Routes>
-      </BrowserRouter>
-    </FatalErrorBoundary>
-  </React.StrictMode>,
+  <FatalErrorBoundary>
+    <BrowserRouter>
+      <Routes>
+        <Route path="/" element={<HomePage />} />
+        <Route path="/room/:roomId" element={<App />} />
+        <Route path="*" element={<HomePage />} />
+      </Routes>
+    </BrowserRouter>
+  </FatalErrorBoundary>,
 );

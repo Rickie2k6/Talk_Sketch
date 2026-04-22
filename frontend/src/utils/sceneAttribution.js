@@ -1,10 +1,6 @@
 import { v4 as uuidv4 } from "uuid";
-
-export function cloneSceneElements(elements) {
-  return (Array.isArray(elements) ? elements : [])
-    .filter((element) => element && typeof element === "object" && !element.isDeleted)
-    .map((element) => JSON.parse(JSON.stringify(element)));
-}
+export { cloneSceneElements } from "../../../shared/excalidrawCollaboration.js";
+import { cloneSceneElements } from "../../../shared/excalidrawCollaboration.js";
 
 export function buildSceneSignature(elements) {
   return cloneSceneElements(elements)

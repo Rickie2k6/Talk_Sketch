@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "NODE_ENV=development bash ./scripts/start_server.sh",
+    "dev": "NODE_ENV=development HOST=${HOST:-0.0.0.0} PORT=${PORT:-8080} bash ./scripts/start_server.sh",
     "start": "NODE_ENV=production HOST=${HOST:-0.0.0.0} PORT=${PORT:-8080} bash ./scripts/start_server.sh"
   },
   "dependencies": {

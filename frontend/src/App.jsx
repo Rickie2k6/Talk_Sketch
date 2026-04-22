@@ -1,5 +1,5 @@
 import { exportToBlob, exportToCanvas } from "@excalidraw/excalidraw";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { io } from "socket.io-client";
 import { v4 as uuidv4 } from "uuid";
@@ -13,8 +13,17 @@ import {
   getOrCreateGuestIdentity,
   normalizeRoomId,
 } from "./utils/collaborationIdentity.js";
-import { buildSceneSignature, cloneSceneElements, diffSceneActions } from "./utils/sceneAttribution.js";
+import { buildSceneSignature, cloneSceneElements } from "./utils/sceneAttribution.js";
 import UserColorManager from "./utils/userColorManager.js";
+import { sanitizeCollaborativeAppState } from "../../shared/excalidrawCollaboration.js";
+import {
+  debugExcalidrawFlow,
+  registerExcalidrawDebugApi,
+  summarizeAppState,
+  summarizeElements,
+  summarizeDrawingFocus,
+  summarizeScenePacket,
+} from "./utils/excalidrawDebug.js";
 
 const RECOGNITION_DEBOUNCE_MS = 450;
 const RECOGNITION_EXPORT_PADDING = 24;
@@ -23,7 +32,7 @@ const RECOGNITION_EXPORT_MAX_DIMENSION = 1200;
 const RECOGNITION_EXPORT_MAX_PIXELS = 900000;
 const LOCAL_EXPRESSION_IDLE_MS = 2000;
 const EXPRESSION_NOTICE_DURATION_MS = 2800;
-const SCENE_SYNC_DEBOUNCE_MS = 200;
+const SCENE_SEND_DEBOUNCE_MS = 60;
 const SHARED_RECOGNITION_FEED_LIMIT = 8;
 const SHARED_STROKE_RENDER_COLOR = "#000000";
 const EXPRESSION_PREVIEW_BACKGROUND = "#ffffff";
@@ -45,16 +54,31 @@ const supportsSpeechRecognition =
   ("SpeechRecognition" in window || "webkitSpeechRecognition" in window);
 
 function getCollaborationServerUrl() {
-  const configuredUrl = import.meta.env.VITE_COLLAB_SERVER_URL;
+  return getBackendServerUrl();
+}
+
+function getBackendServerUrl() {
+  const configuredUrl = import.meta.env.VITE_BACKEND_URL || import.meta.env.VITE_COLLAB_SERVER_URL;
   if (typeof configuredUrl === "string" && configuredUrl.trim()) {
     return configuredUrl.trim();
   }
 
   if (typeof window === "undefined") {
-    return "http://127.0.0.1:8099";
+    return "http://127.0.0.1:8080";
   }
 
-  return `${window.location.protocol}//${window.location.hostname}:8099`;
+  if (import.meta.env.DEV) {
+    const backendPort = String(import.meta.env.VITE_BACKEND_PORT || "8080");
+    const url = new URL(window.location.origin);
+    url.port = backendPort;
+    return url.toString().replace(/\/$/, "");
+  }
+
+  return window.location.origin;
+}
+
+function hasOpenAiApiKey(value) {
+  return typeof value === "string" && value.trim().startsWith("sk-");
 }
 
 function createRecognition({ onText, onStop }) {
@@ -254,7 +278,7 @@ async function exportSceneImage(excalidrawAPI) {
 }
 
 async function renderExpressionPreview(elements, files = {}) {
-  const safeElements = cloneSceneElements(elements);
+  const safeElements = cloneSceneElements(elements).filter((element) => !element?.isDeleted);
   if (safeElements.length === 0) {
     return "";
   }
@@ -375,6 +399,26 @@ function SharedExpressionPreview({ expression, currentUserId, highlighted = fals
   );
 }
 
+function toCollaboratorsMap(users, currentUserId) {
+  const next = new Map();
+
+  if (!Array.isArray(users)) {
+    return next;
+  }
+
+  users.forEach((user) => {
+    if (!user?.userId || user.userId === currentUserId) {
+      return;
+    }
+
+    next.set(user.userId, {
+      username: user.displayName || user.name || "Anonymous",
+    });
+  });
+
+  return next;
+}
+
 function App() {
   const navigate = useNavigate();
   const { roomId: routeRoomId } = useParams();
@@ -384,13 +428,17 @@ function App() {
   const userIdRef = useRef(null);
   const displayNameRef = useRef("");
   const roomIdRef = useRef(roomId);
-  const previousSceneElementsRef = useRef([]);
+  const canonicalSceneElementsRef = useRef([]);
+  const canonicalAppStateRef = useRef(null);
+  const serverSceneVersionRef = useRef(0);
   const [userColor, setUserColor] = useState(null);
   const [displayName, setDisplayName] = useState("");
   const [roomInput, setRoomInput] = useState(roomId);
+  const [joined, setJoined] = useState(false);
   const [identityReady, setIdentityReady] = useState(false);
   const [isLoadingScene, setIsLoadingScene] = useState(false);
   const [activeUsers, setActiveUsers] = useState(new Map());
+  const [collaborators, setCollaborators] = useState(new Map());
   const [historyItems, setHistoryItems] = useState([]);
   const [sharedRecognitions, setSharedRecognitions] = useState([]);
   const [collaborationEvents, setCollaborationEvents] = useState([]);
@@ -401,17 +449,19 @@ function App() {
   const userColorRef = useRef(null);
   const colorManagerRef = useRef(new UserColorManager());
   const expressionIdleTimerRef = useRef(null);
+  const sceneSendTimerRef = useRef(null);
   const expressionNoticeTimerRef = useRef(null);
-  const sceneSyncTimerRef = useRef(null);
-  const remoteSceneTimerRef = useRef(null);
   const sceneLoadingTimerRef = useRef(null);
   const pendingRemoteSceneRef = useRef(null);
-  const isApplyingRemoteSceneRef = useRef(false);
-  const lastEmittedSceneSignatureRef = useRef("");
+  const isApplyingServerSceneRef = useRef(false);
+  const isBoardReadyRef = useRef(false);
+  const collaboratorsRef = useRef(new Map());
+  const isPointerDownRef = useRef(false);
+  const pendingPointerSceneRef = useRef(null);
   const lastSharedExpressionSignatureRef = useRef("");
 
   // Existing states
-  const [excalidrawAPI, setExcalidrawAPI] = useState(null);
+  const excalidrawAPIRef = useRef(null);
   const [sceneElements, setSceneElements] = useState([]);
   const [apiKeyInput, setApiKeyInput] = useState("");
   const [apiKey, setApiKey] = useState("");
@@ -471,7 +521,6 @@ function App() {
     ),
     [historyItems, roomId],
   );
-
   const mergeHistoryItem = (item) => {
     if (!item?.id) {
       return;
@@ -597,12 +646,12 @@ function App() {
 
   const recognizeSharedExpression = async (expression) => {
     const previewUrl = typeof expression?.previewUrl === "string" ? expression.previewUrl.trim() : "";
-    if (!expression?.expressionId || !previewUrl) {
+    if (!expression?.expressionId || !previewUrl || !hasOpenAiApiKey(apiKey)) {
       return;
     }
 
     try {
-      const response = await fetch("/recognize-math", {
+      const response = await fetch(`${getBackendServerUrl()}/recognize-math`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -639,28 +688,79 @@ function App() {
     }
   };
 
-  const applyRemoteScene = (elements) => {
-    const nextElements = cloneSceneElements(elements);
+  const applyRemoteScene = (scene, { replace = false } = {}) => {
+    const incomingElements = cloneSceneElements(scene?.elements);
+    const nextAppState = sanitizeCollaborativeAppState(scene?.appState) || {};
+    const nextFiles = scene?.files && typeof scene.files === "object" ? scene.files : {};
+    const nextSceneVersion = Number.isFinite(scene?.version)
+      ? scene.version
+      : Number.isFinite(scene?.sceneVersion)
+        ? scene.sceneVersion
+        : serverSceneVersionRef.current;
+    const nextAppStateSignature = JSON.stringify(nextAppState || {});
+    const currentAppStateSignature = JSON.stringify(canonicalAppStateRef.current || {});
+
+    if (nextSceneVersion < serverSceneVersionRef.current) {
+      debugExcalidrawFlow("app.applyRemoteScene.skip-stale", {
+        incomingVersion: nextSceneVersion,
+        currentVersion: serverSceneVersionRef.current,
+      });
+      return;
+    }
+
+    const nextElements = incomingElements;
     const signature = buildSceneSignature(nextElements);
 
-    console.log(
-      "[collab] applying remote scene",
-      { elementCount: nextElements.length, signature },
-    );
+    if (
+      nextSceneVersion === serverSceneVersionRef.current &&
+      signature === lastObservedSceneSignatureRef.current &&
+      nextAppStateSignature === currentAppStateSignature
+    ) {
+      debugExcalidrawFlow("app.applyRemoteScene.skip-identical", {
+        sceneVersion: nextSceneVersion,
+        signature,
+      });
+      return;
+    }
 
+    debugExcalidrawFlow("app.applyRemoteScene.start", {
+      replace,
+      sceneVersion: nextSceneVersion,
+      signature,
+      scene: summarizeScenePacket({
+        roomId: roomIdRef.current,
+        version: nextSceneVersion,
+        elements: nextElements,
+        appState: nextAppState,
+        files: nextFiles,
+      }),
+    });
+
+    canonicalSceneElementsRef.current = nextElements;
+    canonicalAppStateRef.current = nextAppState || null;
+    serverSceneVersionRef.current = nextSceneVersion;
     lastObservedSceneSignatureRef.current = signature;
     latestSceneSignatureRef.current = signature;
-    lastEmittedSceneSignatureRef.current = signature;
-    previousSceneElementsRef.current = nextElements;
     setSceneElements(nextElements);
 
+    const excalidrawAPI = excalidrawAPIRef.current;
     if (!excalidrawAPI) {
-      pendingRemoteSceneRef.current = nextElements;
+      pendingRemoteSceneRef.current = {
+        elements: nextElements,
+        appState: nextAppState,
+        files: nextFiles,
+        sceneVersion: nextSceneVersion,
+        replace,
+      };
+      debugExcalidrawFlow("app.applyRemoteScene.queue-pending", {
+        sceneVersion: nextSceneVersion,
+        signature,
+      });
       return;
     }
 
     pendingRemoteSceneRef.current = null;
-    isApplyingRemoteSceneRef.current = true;
+    isApplyingServerSceneRef.current = true;
     window.clearTimeout(sceneLoadingTimerRef.current);
     setIsLoadingScene(true);
     sceneLoadingTimerRef.current = window.setTimeout(() => {
@@ -668,28 +768,38 @@ function App() {
     }, 1500);
 
     try {
-      if (nextElements.length === 0 && typeof excalidrawAPI.resetScene === "function") {
-        // Remote clear must replace the full scene so stale elements cannot survive locally.
-        excalidrawAPI.resetScene({
-          resetLoadingState: false,
-          resetCamera: false,
-        });
-      } else {
-        excalidrawAPI.updateScene({ elements: nextElements });
-      }
+      debugExcalidrawFlow("app.applyRemoteScene.updateScene", {
+        sceneVersion: nextSceneVersion,
+        scene: summarizeScenePacket({
+          roomId: roomIdRef.current,
+          version: nextSceneVersion,
+          elements: nextElements,
+          appState: nextAppState,
+          files: nextFiles,
+        }),
+      });
+      excalidrawAPI.updateScene({
+        elements: nextElements,
+        appState: {
+          ...nextAppState,
+          collaborators: collaboratorsRef.current instanceof Map
+            ? new Map(collaboratorsRef.current)
+            : new Map(),
+        },
+        files: nextFiles,
+      });
     } finally {
-      window.setTimeout(() => {
-        previousSceneElementsRef.current = nextElements;
-        lastObservedSceneSignatureRef.current = signature;
-        isApplyingRemoteSceneRef.current = false;
+      window.requestAnimationFrame(() => {
+        isApplyingServerSceneRef.current = false;
         window.clearTimeout(sceneLoadingTimerRef.current);
         sceneLoadingTimerRef.current = null;
         setIsLoadingScene(false);
-      }, 0);
+      });
     }
   };
 
   const flushPendingExpression = async () => {
+    const excalidrawAPI = excalidrawAPIRef.current;
     if (!socketRef.current?.connected || !excalidrawAPI) {
       return;
     }
@@ -728,62 +838,152 @@ function App() {
     }, LOCAL_EXPRESSION_IDLE_MS);
   };
 
-  const handleSceneChange = (elements) => {
-    const nextElements = cloneSceneElements(
-      excalidrawAPI?.getSceneElements?.() || elements,
-    );
-    const signature = buildSceneSignature(nextElements);
-    if (signature === lastObservedSceneSignatureRef.current) {
+  const emitSceneUpdate = useCallback((scene) => {
+    if (!socketRef.current?.connected || !userIdRef.current || !joined || !scene) {
       return;
     }
 
-    const previousElements = previousSceneElementsRef.current;
-    previousSceneElementsRef.current = nextElements;
-    lastObservedSceneSignatureRef.current = signature;
-    latestSceneSignatureRef.current = signature;
-    setSceneElements(nextElements);
-
-    if (isApplyingRemoteSceneRef.current) {
-      return;
-    }
-
-    if (!socketRef.current?.connected || !userIdRef.current) {
-      return;
-    }
-
-    const actions = diffSceneActions(previousElements, nextElements, {
-      roomId: roomIdRef.current,
-      userId: userIdRef.current,
-      displayName: displayNameRef.current,
-      color: userColorRef.current || colorManagerRef.current.getColorForUser(userIdRef.current),
+    debugExcalidrawFlow("app.emitSceneUpdate", {
+      scene: summarizeScenePacket({
+        roomId: roomIdRef.current,
+        version: serverSceneVersionRef.current,
+        elements: scene.elements,
+        appState: scene.appState,
+        files: scene.files,
+      }),
     });
 
-    window.clearTimeout(sceneSyncTimerRef.current);
-    sceneSyncTimerRef.current = window.setTimeout(() => {
-      if (!socketRef.current?.connected) {
-        return;
-      }
+    socketRef.current.emit("scene:update", {
+      roomId: roomIdRef.current,
+      scene: {
+        elements: scene.elements,
+        appState: scene.appState,
+        files: scene.files,
+        version: serverSceneVersionRef.current,
+      },
+    });
+  }, [joined]);
 
-      if (signature === lastEmittedSceneSignatureRef.current) {
-        return;
-      }
+  const flushPendingPointerScene = useCallback(() => {
+    if (!pendingPointerSceneRef.current) {
+      return;
+    }
 
-      lastEmittedSceneSignatureRef.current = signature;
-      console.log(
-        "[collab] emitting scene-update",
-        { roomId: roomIdRef.current, elementCount: nextElements.length, signature, actionCount: actions.length },
-      );
-      socketRef.current.emit("scene-update", {
-        roomId: roomIdRef.current,
-        userId: userIdRef.current,
-        displayName: displayNameRef.current,
-        timestamp: new Date().toISOString(),
-        elements: nextElements,
-        actions,
+    const scene = pendingPointerSceneRef.current;
+    pendingPointerSceneRef.current = null;
+    emitSceneUpdate(scene);
+  }, [emitSceneUpdate]);
+
+  const handleBoardPointerDown = useCallback(() => {
+    isPointerDownRef.current = true;
+    debugExcalidrawFlow("app.board.pointer-down", {});
+  }, []);
+
+  const handleBoardPointerUp = useCallback(() => {
+    const wasPointerDown = isPointerDownRef.current;
+    isPointerDownRef.current = false;
+    debugExcalidrawFlow("app.board.pointer-up", {
+      hadPendingScene: Boolean(pendingPointerSceneRef.current),
+      wasPointerDown,
+    });
+    flushPendingPointerScene();
+  }, [flushPendingPointerScene]);
+
+  const handleSceneChange = (elements, appState, files) => {
+    if (isApplyingServerSceneRef.current) {
+      debugExcalidrawFlow("app.handleSceneChange.skip-applying-remote", {});
+      return;
+    }
+
+    const currentElements = cloneSceneElements(
+      excalidrawAPIRef.current?.getSceneElementsIncludingDeleted?.() || elements,
+    );
+    const liveAppState = excalidrawAPIRef.current?.getAppState?.() || appState || {};
+    const isEditingLinearElement = Boolean(liveAppState?.editingLinearElement);
+    const isCreatingMultiElement = Boolean(liveAppState?.multiElement);
+    const activeToolType = liveAppState?.activeTool?.type || null;
+    const shouldSkipExpressionCapture =
+      isPointerDownRef.current ||
+      isEditingLinearElement ||
+      isCreatingMultiElement ||
+      activeToolType === "line" ||
+      activeToolType === "arrow";
+    const signature = buildSceneSignature(currentElements);
+    latestSceneSignatureRef.current = signature;
+    setSceneElements(currentElements);
+    debugExcalidrawFlow("app.handleSceneChange.received", {
+      signature,
+      elements: summarizeElements(currentElements),
+      drawFocus: summarizeDrawingFocus(currentElements),
+      appState: summarizeAppState(liveAppState),
+      fileCount: files && typeof files === "object" ? Object.keys(files).length : 0,
+    });
+
+    if (!socketRef.current?.connected || !userIdRef.current || !joined) {
+      debugExcalidrawFlow("app.handleSceneChange.skip-not-connected", {
+        joined,
+        connected: Boolean(socketRef.current?.connected),
       });
-    }, SCENE_SYNC_DEBOUNCE_MS);
+      return;
+    }
 
-    if (nextElements.length > 0) {
+    if (isEditingLinearElement || isCreatingMultiElement) {
+      debugExcalidrawFlow("app.handleSceneChange.skip-linear-in-progress", {
+        isEditingLinearElement,
+        isCreatingMultiElement,
+        activeToolType,
+        elements: summarizeElements(currentElements),
+        drawFocus: summarizeDrawingFocus(currentElements),
+        appState: summarizeAppState(liveAppState),
+      });
+      return;
+    }
+
+    window.clearTimeout(sceneSendTimerRef.current);
+    sceneSendTimerRef.current = window.setTimeout(() => {
+      if (!socketRef.current?.connected || !joined) {
+        return;
+      }
+
+      const liveElements = cloneSceneElements(
+        excalidrawAPIRef.current?.getSceneElementsIncludingDeleted?.() || currentElements,
+      );
+      const syncedAppState = sanitizeCollaborativeAppState(
+        excalidrawAPIRef.current?.getAppState?.() || appState,
+      ) || {};
+      const liveFiles = excalidrawAPIRef.current?.getFiles?.() || files || {};
+      const scene = {
+        elements: liveElements,
+        appState: syncedAppState,
+        files: liveFiles,
+      };
+
+      if (isPointerDownRef.current) {
+        pendingPointerSceneRef.current = scene;
+        debugExcalidrawFlow("app.handleSceneChange.defer-while-pointer-down", {
+          scene: summarizeScenePacket({
+            roomId: roomIdRef.current,
+            version: serverSceneVersionRef.current,
+            elements: liveElements,
+            appState: syncedAppState,
+            files: liveFiles,
+          }),
+        });
+        return;
+      }
+
+      emitSceneUpdate(scene);
+    }, SCENE_SEND_DEBOUNCE_MS);
+
+    if (shouldSkipExpressionCapture) {
+      window.clearTimeout(expressionIdleTimerRef.current);
+      debugExcalidrawFlow("app.handleSceneChange.skip-expression-capture", {
+        activeToolType,
+        isPointerDown: isPointerDownRef.current,
+        isEditingLinearElement,
+        isCreatingMultiElement,
+      });
+    } else if (currentElements.some((element) => !element?.isDeleted)) {
       queueExpressionCapture();
     } else {
       window.clearTimeout(expressionIdleTimerRef.current);
@@ -803,28 +1003,17 @@ function App() {
       if (expressionIdleTimerRef.current) {
         window.clearTimeout(expressionIdleTimerRef.current);
       }
+      if (sceneSendTimerRef.current) {
+        window.clearTimeout(sceneSendTimerRef.current);
+      }
       if (expressionNoticeTimerRef.current) {
         window.clearTimeout(expressionNoticeTimerRef.current);
-      }
-      if (sceneSyncTimerRef.current) {
-        window.clearTimeout(sceneSyncTimerRef.current);
-      }
-      if (remoteSceneTimerRef.current) {
-        window.clearTimeout(remoteSceneTimerRef.current);
       }
       if (sceneLoadingTimerRef.current) {
         window.clearTimeout(sceneLoadingTimerRef.current);
       }
     };
   }, []);
-
-  useEffect(() => {
-    if (!excalidrawAPI || !pendingRemoteSceneRef.current) {
-      return;
-    }
-
-    applyRemoteScene(pendingRemoteSceneRef.current);
-  }, [excalidrawAPI]);
 
   useEffect(() => {
     const identity = getOrCreateGuestIdentity();
@@ -861,29 +1050,51 @@ function App() {
   }, [roomId]);
 
   useEffect(() => {
+    registerExcalidrawDebugApi(() => ({
+      roomId: roomIdRef.current,
+      joined,
+      socketConnected: Boolean(socketRef.current?.connected),
+      serverSceneVersion: serverSceneVersionRef.current,
+      sceneElements: summarizeElements(sceneElements),
+      canonicalElements: summarizeElements(canonicalSceneElementsRef.current),
+      collaborators: collaboratorsRef.current instanceof Map
+        ? Array.from(collaboratorsRef.current.entries())
+        : [],
+      appState: summarizeAppState(excalidrawAPIRef.current?.getAppState?.() || {}),
+    }));
+  }, [joined, sceneElements]);
+
+  useEffect(() => {
     if (!identityReady) {
       return;
     }
 
+    setJoined(false);
     setActiveUsers(new Map());
+    setCollaborators(new Map());
+    collaboratorsRef.current = new Map();
     setSharedRecognitions([]);
     setCollaborationEvents([]);
     setExpressionNotice(null);
     setHighlightedExpressionId("");
-    previousSceneElementsRef.current = [];
-    pendingRemoteSceneRef.current = [];
+    canonicalSceneElementsRef.current = [];
+    canonicalAppStateRef.current = null;
+    serverSceneVersionRef.current = 0;
+    pendingRemoteSceneRef.current = null;
     lastObservedSceneSignatureRef.current = "";
-    lastEmittedSceneSignatureRef.current = "";
     latestSceneSignatureRef.current = "";
     lastSharedExpressionSignatureRef.current = "";
     lastBroadcastRecognitionKeyRef.current = "";
-    applyRemoteScene([]);
+    isBoardReadyRef.current = false;
+    setSceneElements([]);
+    setIsLoadingScene(false);
 
     const userId = userIdRef.current;
     const currentDisplayName = displayNameRef.current;
     const sessionId = sessionIdRef.current;
     const color = userColorRef.current || colorManagerRef.current.getColorForUser(userId);
     const socket = io(getCollaborationServerUrl(), {
+      transports: ["websocket"],
       reconnection: true,
       reconnectionDelay: 1000,
       reconnectionDelayMax: 5000,
@@ -891,71 +1102,20 @@ function App() {
     });
 
     socket.on("connect", () => {
-      console.log(`Connected to collaboration server as socket ${socket.id}`);
-      socket.emit("join-room", roomId);
-      socket.emit("user:join", {
+      debugExcalidrawFlow("socket.connect", {
+        socketId: socket.id,
         roomId,
-        userId,
-        displayName: currentDisplayName,
-        sessionId,
-        color,
       });
-    });
-
-    socket.on("user:joined", (payload) => {
-      const { roomId: joinedRoomId, userId: newUserId, displayName: joinedDisplayName, color: newColor, connectionCount } = payload;
-      if (joinedRoomId !== roomIdRef.current) {
-        return;
-      }
-      if (newColor) {
-        colorManagerRef.current.setColorForUser(newUserId, newColor);
-      }
-      setActiveUsers((prev) => {
-        const next = new Map(prev);
-        next.set(newUserId, {
-          displayName: joinedDisplayName || (newUserId === userIdRef.current ? displayNameRef.current : "Guest"),
-          color: newColor || colorManagerRef.current.getColorForUser(newUserId),
-          connectionCount,
-        });
-        return next;
+      socket.emit("join-room", {
+        roomId,
+        user: {
+          id: userId,
+          name: currentDisplayName,
+          sessionId,
+          color,
+        },
       });
-      console.log(`User ${newUserId} joined room ${joinedRoomId} with color ${newColor} (${connectionCount} connection(s))`);
-    });
-
-    socket.on("user:updated", (payload) => {
-      const { roomId: updatedRoomId, userId: updatedUserId, displayName: updatedDisplayName, color: updatedColor, connectionCount } = payload;
-      if (updatedRoomId !== roomIdRef.current) {
-        return;
-      }
-      if (updatedColor) {
-        colorManagerRef.current.setColorForUser(updatedUserId, updatedColor);
-      }
-      setActiveUsers((prev) => {
-        const next = new Map(prev);
-        if (connectionCount > 0) {
-          next.set(updatedUserId, {
-            displayName: updatedDisplayName || next.get(updatedUserId)?.displayName || "Guest",
-            color: updatedColor || colorManagerRef.current.getColorForUser(updatedUserId),
-            connectionCount,
-          });
-        } else {
-          next.delete(updatedUserId);
-        }
-        return next;
-      });
-    });
-
-    socket.on("user:left", (payload) => {
-      const { roomId: leftRoomId, userId: leftUserId } = payload;
-      if (leftRoomId !== roomIdRef.current) {
-        return;
-      }
-      setActiveUsers((prev) => {
-        const next = new Map(prev);
-        next.delete(leftUserId);
-        return next;
-      });
-      console.log(`User ${leftUserId} left`);
+      setJoined(true);
     });
 
     socket.on("users:list", (payload) => {
@@ -976,36 +1136,75 @@ function App() {
         });
       });
       setActiveUsers(userMap);
+      const nextCollaborators = toCollaboratorsMap(users, userIdRef.current);
+      collaboratorsRef.current = nextCollaborators;
+      setCollaborators(nextCollaborators);
+      debugExcalidrawFlow("socket.users:list", {
+        roomId: payload.roomId,
+        users,
+        collaborators: Array.from(nextCollaborators.entries()),
+      });
     });
 
-    socket.on("scene:init", (payload) => {
+    socket.on("presence-update", (payload) => {
       if (payload?.roomId !== roomIdRef.current) {
         return;
       }
-      console.log("[collab] received scene:init", {
-        elementCount: Array.isArray(payload) ? payload.length : payload?.elements?.length || 0,
+
+      setCollaborators((prev) => {
+        const next = prev instanceof Map ? new Map(prev) : new Map();
+        const collaboratorId = payload.user?.id || payload.socketId;
+
+        if (payload.type === "join" && collaboratorId && collaboratorId !== userIdRef.current) {
+          next.set(collaboratorId, {
+            username: payload.user?.name || "Anonymous",
+          });
+        }
+
+        if (payload.type === "leave" && collaboratorId) {
+          next.delete(collaboratorId);
+        }
+
+        collaboratorsRef.current = next;
+        return next;
       });
-      applyRemoteScene(Array.isArray(payload) ? payload : payload?.elements);
+      debugExcalidrawFlow("socket.presence-update", payload);
+    });
+
+    socket.on("scene-init", (payload) => {
+      if (payload?.roomId !== roomIdRef.current) {
+        return;
+      }
+      debugExcalidrawFlow("socket.scene-init", {
+        scene: summarizeScenePacket({
+          roomId: payload.roomId,
+          version: payload?.scene?.version,
+          elements: payload?.scene?.elements,
+          appState: payload?.scene?.appState,
+          files: payload?.scene?.files,
+        }),
+      });
+      applyRemoteScene(payload?.scene || {}, { replace: true });
     });
 
     const handleRemoteScene = (payload) => {
       if (payload?.roomId !== roomIdRef.current) {
         return;
       }
-      if (payload?.userId && payload.userId === userIdRef.current) {
-        return;
-      }
-      console.log("[collab] received remote-scene", {
-        elementCount: Array.isArray(payload) ? payload.length : payload?.elements?.length || 0,
+      debugExcalidrawFlow("socket.scene-update", {
+        scene: summarizeScenePacket({
+          roomId: payload.roomId,
+          senderId: payload.senderId,
+          version: payload?.scene?.version,
+          elements: payload?.scene?.elements,
+          appState: payload?.scene?.appState,
+          files: payload?.scene?.files,
+        }),
       });
-      pendingRemoteSceneRef.current = Array.isArray(payload) ? payload : payload?.elements;
-      window.clearTimeout(remoteSceneTimerRef.current);
-      remoteSceneTimerRef.current = window.setTimeout(() => {
-        applyRemoteScene(pendingRemoteSceneRef.current);
-      }, 50);
+      applyRemoteScene(payload?.scene || {}, { replace: true });
     };
 
-    socket.on("remote-scene", handleRemoteScene);
+    socket.on("scene-update", handleRemoteScene);
     socket.on("scene:update", handleRemoteScene);
 
     socket.on("recognition:list", (payload) => {
@@ -1055,16 +1254,23 @@ function App() {
     });
 
     socket.on("connect_error", (error) => {
+      debugExcalidrawFlow("socket.connect-error", {
+        message: error?.message || String(error),
+      });
       console.error("Collaboration connect error:", error);
     });
 
     socket.on("disconnect", (reason) => {
+      debugExcalidrawFlow("socket.disconnect", {
+        reason,
+      });
       console.log(`Disconnected from collaboration server: ${reason}`);
+      setJoined(false);
     });
 
     socketRef.current = socket;
 
-    fetch(`/history?roomId=${encodeURIComponent(roomId)}`)
+    fetch(`${getBackendServerUrl()}/history?roomId=${encodeURIComponent(roomId)}`)
       .then((response) => {
         if (!response.ok) {
           throw new Error("Unable to load shared expressions");
@@ -1087,18 +1293,57 @@ function App() {
       });
 
     return () => {
-      flushPendingExpression();
-      socket.emit("leave-room", roomId);
-      socket.emit("user:leave", { roomId, userId, sessionId });
-      socket.disconnect();
+      if (sceneSendTimerRef.current) {
+        window.clearTimeout(sceneSendTimerRef.current);
+        sceneSendTimerRef.current = null;
+      }
+      socket.removeAllListeners();
+      if (socket.active || socket.connected) {
+        socket.disconnect();
+      }
       if (socketRef.current === socket) {
         socketRef.current = null;
       }
     };
   }, [identityReady, roomId]);
 
+  const handleExcalidrawApiReady = useCallback((api) => {
+    if (!api || excalidrawAPIRef.current === api) {
+      return;
+    }
+
+    excalidrawAPIRef.current = api;
+    isBoardReadyRef.current = true;
+    debugExcalidrawFlow("app.excalidraw-api-ready", {
+      hasPendingScene: Boolean(pendingRemoteSceneRef.current),
+    });
+
+    if (!pendingRemoteSceneRef.current) {
+      return;
+    }
+
+    const pendingScene = pendingRemoteSceneRef.current;
+    pendingRemoteSceneRef.current = null;
+    window.requestAnimationFrame(() => {
+      debugExcalidrawFlow("app.excalidraw-api-ready.replay-pending", {
+        sceneVersion: pendingScene.sceneVersion,
+        elements: summarizeElements(pendingScene.elements),
+      });
+      applyRemoteScene(pendingScene, { replace: pendingScene.replace === true });
+    });
+  }, []);
+
   const recognizeScene = async ({ preserveExistingMath = false, signature = "" } = {}) => {
+    const excalidrawAPI = excalidrawAPIRef.current;
     if (!excalidrawAPI) return "";
+
+    if (!hasOpenAiApiKey(apiKey)) {
+      if (!preserveExistingMath) {
+        setRecognizedMath("");
+      }
+      setRecognitionError("");
+      return "";
+    }
 
     const cacheKey = signature || latestSceneSignatureRef.current;
     if (cacheKey && recognitionCacheRef.current.has(cacheKey)) {
@@ -1126,7 +1371,7 @@ function App() {
     setIsRecognizingMath(true);
 
     try {
-      const response = await fetch("/recognize-math", {
+      const response = await fetch(`${getBackendServerUrl()}/recognize-math`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1193,7 +1438,16 @@ function App() {
 
   useEffect(() => {
     const activeElements = sceneElements.filter((el) => !el?.isDeleted);
-    if (!excalidrawAPI || activeElements.length === 0) {
+    if (!isBoardReadyRef.current || !excalidrawAPIRef.current || activeElements.length === 0) {
+      setRecognizedMath("");
+      setRecognitionError("");
+      lastSceneSignatureRef.current = "";
+      lastAttemptedSceneSignatureRef.current = "";
+      pendingRecognitionSignatureRef.current = "";
+      return;
+    }
+
+    if (!hasOpenAiApiKey(apiKey)) {
       setRecognizedMath("");
       setRecognitionError("");
       lastSceneSignatureRef.current = "";
@@ -1232,7 +1486,7 @@ function App() {
     }, RECOGNITION_DEBOUNCE_MS);
 
     return () => clearTimeout(recognitionTimer);
-  }, [excalidrawAPI, isRecognizingMath, sceneElements]);
+  }, [apiKey, isRecognizingMath, sceneElements]);
 
   const appendMessage = (role, text) => {
     const message = { id: `${Date.now()}-${Math.random()}`, role, text };
@@ -1250,7 +1504,7 @@ function App() {
 
   const connectApiKey = () => {
     const key = apiKeyInput.trim();
-    if (!key.startsWith("sk-")) {
+    if (!hasOpenAiApiKey(key)) {
       alert("Invalid API key format.");
       return;
     }
@@ -1266,8 +1520,12 @@ function App() {
       alert("Please connect your API key first.");
       return;
     }
+    if (wantsExpressionOnly && !hasOpenAiApiKey(apiKey)) {
+      appendMessage("assistant", "Connect your OpenAI API key first to use math recognition.");
+      return;
+    }
 
-    const elements = excalidrawAPI?.getSceneElements?.() || [];
+    const elements = excalidrawAPIRef.current?.getSceneElements?.() || [];
     appendMessage("user", message);
     setChatInput("");
 
@@ -1297,7 +1555,7 @@ function App() {
     setIsSending(true);
 
     try {
-      const response = await fetch("/analyze-sketch", {
+      const response = await fetch(`${getBackendServerUrl()}/analyze-sketch`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1400,16 +1658,17 @@ function App() {
   };
 
   const handleExportRoomLog = () => {
-    window.open(`/events/export?roomId=${encodeURIComponent(roomId)}&format=csv`, "_blank", "noopener,noreferrer");
+    window.open(`${getBackendServerUrl()}/events/export?roomId=${encodeURIComponent(roomId)}&format=csv`, "_blank", "noopener,noreferrer");
   };
 
   return (
     <div className="app-shell">
       <div className="board-area">
         <Whiteboard
-          strokeColor={userColor || SHARED_STROKE_RENDER_COLOR}
-          onApiReady={setExcalidrawAPI}
+          onApiReady={handleExcalidrawApiReady}
           onSceneChange={handleSceneChange}
+          onBoardPointerDown={handleBoardPointerDown}
+          onBoardPointerUp={handleBoardPointerUp}
         />
         {expressionNotice && latestSharedExpression ? (
           <div className="expression-notice">
@@ -1439,13 +1698,17 @@ function App() {
             <div style={{ fontSize: "11px", color: "#666" }}>Room: <strong style={{ color: "#1f2a44" }}>{roomId}</strong></div>
             <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto auto", gap: "6px" }}>
               <input
+                id="room-id-input"
+                name="roomId"
                 className="chat-input"
                 type="text"
                 value={roomInput}
                 onChange={(event) => setRoomInput(event.target.value)}
                 placeholder="Enter room id"
               />
-              <button className="history-btn" type="button" onClick={handleJoinRoom}>Join</button>
+              <button className="history-btn" type="button" onClick={handleJoinRoom}>
+                {joined && roomInput === roomId ? "Joined" : "Join Room"}
+              </button>
               <button className="history-btn" type="button" onClick={handleCreateRoom}>New</button>
             </div>
             <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
@@ -1599,6 +1862,8 @@ function App() {
             </div>
           ) : null}
           <input
+            id="chat-message-input"
+            name="chatMessage"
             className="chat-input"
             type="text"
             placeholder="Ask about your sketch..."
@@ -1626,6 +1891,7 @@ function App() {
           <div className="api-row">
             <input
               id="api-key-input"
+              name="apiKey"
               className="api-input"
               type="password"
               placeholder="Paste key (session only)"
